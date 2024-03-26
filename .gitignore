@@ -1,0 +1,30 @@
+# mac
+.DS_Store
+
+# windows
+Thumbs.db
+
+# emacs
+[#]*[#]
+
+# vim
+*.sw?
+*~
+
+# c/c++ object file
+*.o
+
+# Makefile
+*.d
+
+# python
+*.ipynb_checkpoints
+__pycache__
+
+# haskell
+.stack-work/
+dist-newstyle/
+dist/
+newdist/
+*.hi
+.hspec-failures
