@@ -1,2 +1,7 @@
+import System.FilePath.Glob (glob)
+import Test.DocTest
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented"
+main = do
+  paths <- glob "src/**/*.hs"
+  doctest $ "-isrc" : paths

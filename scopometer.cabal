@@ -1,38 +1,36 @@
-cabal-version: 2.2
+cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.35.1.
 --
 -- see: https://github.com/sol/hpack
 
 name:           scopometer
-version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/githubuser/scopometer#readme>
-homepage:       https://github.com/githubuser/scopometer#readme
-bug-reports:    https://github.com/githubuser/scopometer/issues
-author:         Author name here
-maintainer:     example@example.com
-copyright:      2024 Author name here
-license:        BSD-3-Clause
+version:        0.0.1
+description:    .
+homepage:       https://github.com/thyeem/scopometer#readme
+bug-reports:    https://github.com/thyeem/scopometer/issues
+author:         Francis Lim
+maintainer:     thyeem@gmail.com
+copyright:      2024 Francis
+license:        MIT
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
-    CHANGELOG.md
+    ChangeLog.md
 
 source-repository head
   type: git
-  location: https://github.com/githubuser/scopometer
+  location: https://github.com/thyeem/scopometer
 
 library
   exposed-modules:
       Scopometer
   other-modules:
       Paths_scopometer
-  autogen-modules:
-      Paths_scopometer
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans
   build-depends:
       base
     , here
@@ -43,7 +41,7 @@ executable scop
   main-is: Main.hs
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base
     , here
@@ -51,18 +49,18 @@ executable scop
     , scopometer
   default-language: Haskell2010
 
-test-suite scopometer-test
+test-suite doctest
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
       Paths_scopometer
-  autogen-modules:
-      Paths_scopometer
   hs-source-dirs:
       test
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      base
+      Glob
+    , base
+    , doctest
     , here
     , s
     , scopometer

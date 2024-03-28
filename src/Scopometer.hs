@@ -1,6 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Scopometer where
+module Scopometer (module Scopometer) where
 
 import Data.String.Here
 import Text.S
@@ -48,48 +48,134 @@ public class ConcurrencyProblemDemo {
 }
 |]
 
-o1 :: String
-o1 = "class Counter {"
+type Lvalue = String
 
-o2 :: String
-o2 = "public class ConcurrencyProblemDemo {"
+token :: Stream s => S s a -> S s a
+token p = p <* tidy
 
-o3 :: String
-o3 = "    public static void main(String[] args) throws InterruptedException {"
+tidy :: Stream s => S s ()
+tidy = skip' javaDef
 
-o4 :: String
-o4 = "    public static void gcd(int n1, int n2) {"
+-- | header of a new scope
+--
+-- >>> ta header "class Counter {"
+-- ("Counter",[])
+--
+-- >>> ta header "public class ConcurrencyProblemDemo {"
+-- ("ConcurrencyProblemDemo",[])
+--
+-- >>> ta header "    public static void main(String[] args) throws InterruptedException {"
+-- ("main",["args"])
+--
+-- >>> ta header "    public static void gcd(int n1, int n2) {"
+-- ("gcd",["n1","n2"])
+--
+-- >>> ta header "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
+-- ("fn",["in","out","matrix","str"])
+--
+-- >>> ta header "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
+-- ("getHMACSHA512",["signatureKey","textToHash"])
+--
+-- >>> ta header "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
+-- ("calculateHMAC",["signatureKey","textToHash"])
+--
+-- >>> ta header "private static String toHexString(byte[] bytes) {"
+-- ("toHexString",["bytes"])
+--
+-- >>> ta header "public static byte[] hexStringToByteArray(String str) {"
+-- ("hexStringToByteArray",["str"])
+header :: Stream s => S s (Lvalue, [Lvalue])
+header = do
+  tidy -- skip the unnecesary
+  _ <- many (modifier <|> generic) -- modifier
+  _ <- typKwd <|> typ -- type or type-keyword
+  i <- iden -- varname
+  o <- option [] args -- (arg1, arg2, ..)
+  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
+  _ <- symbol "{"
+  return (i, o)
 
--- | goes into a new scope
--- >>> src = "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
-opener :: Stream s => S s String
-opener = do
-  skip
-  void $ many (keyword <|> angles (many $ anycharBut '>'))
-  o <- iden
-  _ <- option [] args
-  void $ many (lexeme alphas)
-  void $ symbol "{"
-  return o
+-- | modifier
+modifier :: Stream s => S s String
+modifier = token . choice $ symbol <$> ["protected", "private", "public", "static", "final"]
 
--- | reserved
-keyword :: Stream s => S s String
-keyword =
-  choice $
-    symbol <$> ["protected", "private", "interface", "public", "static", "class", "void"]
+-- | type-keywords
+typKwd :: Stream s => S s String
+typKwd = token . choice $ symbol <$> ["class", "interface"]
+
+-- | type
+-- >>> ta typ "int[][] c0ffee"
+-- "int[][]"
+--
+-- >>> ta typ "Drinks<T> c0ffee"
+-- "Drinks<T>"
+--
+-- >>> ta typ "String... c0ffee"
+-- "String..."
+typ :: Stream s => S s String
+typ =
+  token $
+    symbol "void"
+      <|> do
+        i <- iden -- object class name
+        g <- option mempty generic -- diamond
+        l <- option mempty (some $ symbol "[]") -- ndarry
+        v <- option mempty (symbol "...") -- varargs
+        return $ concat [i, g, concat l, v]
+
+-- | generic diamond
+--
+-- >>> ta generic "<T,U> c0ffee[]"
+-- "<T,U>"
+generic :: Stream s => S s String
+generic = token $ do
+  o <- angles (many $ anycharBut '>')
+  return $ "<" ++ o ++ ">"
+
+-- | annotations
+--
+-- >>> ta anno "@atCafe string c0ffee"
+-- "@atCafe"
+--
+-- >>> ta anno "@SuppressWarnings(bool=false) public"
+-- "@SuppressWarnings(bool=false)"
+anno :: Stream s => S s String
+anno = token $ do
+  c <- char '@' -- sigil
+  n <- iden -- name
+  o <-
+    option
+      mempty
+      ( do
+          p <- parens (many $ anycharBut ')')
+          return $ "(" ++ p ++ ")"
+      ) -- optional (...)
+  return $ c : n ++ o
 
 -- | identifier
+-- Use much simpler way -> iden = identifier javaDef
 --
--- >>> iden = identifier javaDef    -- much simpler way
+-- >>> ta iden "_c0ffee"
+-- "_c0ffee"
+--
+-- >>> ta iden "c0ffee[][]"
+-- "c0ffee"
 iden :: Stream s => S s String
-iden = lexeme $ liftA2 (:) (char '_' <|> alpha) (many alphaNum)
+iden = token $ do
+  c <- char '_' <|> alpha
+  o <- many alphaNum
+  return $ c : o
+
+-- | identifier with consuming the following nd-array notation
+iden' :: Stream s => S s String
+iden' = iden <* option mempty (some $ symbol "[]")
 
 -- | parse a list of L-value from an argument declaration
 --
 -- >>> ta args "(final T int, U out, int[][] matrix, String... str)"
 -- ["int","out","matrix","str"]
 args :: Stream s => S s [String]
-args = lexeme $ parens (sepBy (symbol ",") arg)
+args = token $ parens (sepBy (symbol ",") arg)
 
 -- | parse a L-value from
 --
@@ -102,18 +188,12 @@ args = lexeme $ parens (sepBy (symbol ",") arg)
 -- >>> ta arg "final string... c0ffee"
 -- "c0ffee"
 --
--- >>> ta arg "class<T> c0ffee"
+-- >>> ta arg "Drinks<T> c0ffee"
 -- "c0ffee"
 arg :: Stream s => S s String
-arg = do
-  skip
-  void $ option mempty (char '@' *> alphaNums <* skip) -- annotations
-  void $ option mempty (symbol "final")
-  void $ alphaNums <* skip -- type or object class
-  void $ option mempty (angles (many $ anycharBut '>'))
-  void $ option mempty (some $ symbol "[]")
-  void $ option mempty (symbol "...")
-  iden
-
-coffee :: String
-coffee = "Cat cat1 = new Cat(\"Luna\", 3);"
+arg = token $ do
+  tidy -- skip the unnecesary
+  _ <- option mempty anno -- annotation
+  _ <- option mempty (symbol "final") -- final keyword
+  _ <- typ -- type
+  iden' -- varname

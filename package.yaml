@@ -28,8 +28,8 @@ library:
 
 executables:
   scop:
-    main:                Main.hs
-    source-dirs:         app
+    main: Main.hs
+    source-dirs: app
     ghc-options:
     - -threaded
     - -rtsopts
@@ -41,12 +41,14 @@ executables:
       other-modules: Paths_scopometer
 
 tests:
-  scopometer-test:
-    main:                Spec.hs
-    source-dirs:         test
+  doctest:
+    main: Spec.hs
+    source-dirs: test
     ghc-options:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+    - Glob
+    - doctest
     - scopometer
