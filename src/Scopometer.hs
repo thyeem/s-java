@@ -60,12 +60,12 @@ o3 = "    public static void main(String[] args) throws InterruptedException {"
 o4 :: String
 o4 = "    public static void gcd(int n1, int n2) {"
 
--- | opens a new scope
--- >>> src = "public <T, U> void (final T in, U out, int[][] matrix, String... str) {"
+-- | goes into a new scope
+-- >>> src = "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
 opener :: Stream s => S s String
 opener = do
   skip
-  void $ many keyword
+  void $ many (keyword <|> angles (many $ anycharBut '>'))
   o <- iden
   _ <- option [] args
   void $ many (lexeme alphas)
@@ -79,7 +79,8 @@ keyword =
     symbol <$> ["protected", "private", "interface", "public", "static", "class", "void"]
 
 -- | identifier
--- >>> iden = identifier javaDef
+--
+-- >>> iden = identifier javaDef    -- much simpler way
 iden :: Stream s => S s String
 iden = lexeme $ liftA2 (:) (char '_' <|> alpha) (many alphaNum)
 
@@ -109,7 +110,7 @@ arg = do
   void $ option mempty (char '@' *> alphaNums <* skip) -- annotations
   void $ option mempty (symbol "final")
   void $ alphaNums <* skip -- type or object class
-  void $ option mempty (angles (many $ noneOf ",>"))
+  void $ option mempty (angles (many $ anycharBut '>'))
   void $ option mempty (some $ symbol "[]")
   void $ option mempty (symbol "...")
   iden
