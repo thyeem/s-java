@@ -51,10 +51,10 @@ public class ConcurrencyProblemDemo {
 type Lvalue = String
 
 token :: Stream s => S s a -> S s a
-token p = p <* tidy
+token p = p <* leap
 
-tidy :: Stream s => S s ()
-tidy = skip' javaDef
+leap :: Stream s => S s ()
+leap = skip' javaDef
 
 -- | header of a new scope
 --
@@ -86,7 +86,7 @@ tidy = skip' javaDef
 -- ("hexStringToByteArray",["str"])
 header :: Stream s => S s (Lvalue, [Lvalue])
 header = do
-  tidy -- skip the unnecesary
+  leap -- skip the unnecesary
   _ <- many (modifier <|> generic) -- modifier
   _ <- typKwd <|> typ -- type or type-keyword
   i <- iden -- varname
@@ -97,11 +97,13 @@ header = do
 
 -- | modifier
 modifier :: Stream s => S s String
-modifier = token . choice $ symbol <$> ["protected", "private", "public", "static", "final"]
+modifier =
+  label "modifier" . token . choice $
+    symbol <$> ["protected", "private", "public", "static", "final"]
 
 -- | type-keywords
 typKwd :: Stream s => S s String
-typKwd = token . choice $ symbol <$> ["class", "interface"]
+typKwd = label "type-keywords" . token . choice $ symbol <$> ["class", "interface"]
 
 -- | type
 -- >>> ta typ "int[][] c0ffee"
@@ -114,7 +116,7 @@ typKwd = token . choice $ symbol <$> ["class", "interface"]
 -- "String..."
 typ :: Stream s => S s String
 typ =
-  token $
+  label "type" . token $
     symbol "void"
       <|> do
         i <- o'iden -- object/class name
@@ -128,7 +130,7 @@ typ =
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
 generic :: Stream s => S s String
-generic = token $ do
+generic = label "generic" . token $ do
   o <- angles (many $ anycharBut '>')
   return $ "<" ++ o ++ ">"
 
@@ -140,7 +142,7 @@ generic = token $ do
 -- >>> ta anno "@SuppressWarnings(bool=false) public"
 -- "@SuppressWarnings(bool=false)"
 anno :: Stream s => S s String
-anno = token $ do
+anno = label "annotation" . token $ do
   c <- char '@' -- sigil
   n <- o'iden -- name
   o <-
@@ -161,14 +163,14 @@ anno = token $ do
 -- >>> ta iden "c0ffee[][]"
 -- "c0ffee"
 iden :: Stream s => S s String
-iden = identifier javaDef <* option mempty (some $ symbol "[]")
+iden = identifier javaDef <* option mempty (some $ symbol "[]") <?> "identifier"
 
 -- | object name
 --
 -- >>> ta o'iden "_c0ffee"
 -- "_c0ffee"
 o'iden :: Stream s => S s String
-o'iden = token $ do
+o'iden = label "object/class name" . token $ do
   c <- alpha <|> char '_'
   o <- many $ alphaNum <|> char '_'
   return $ c : o
@@ -178,7 +180,7 @@ o'iden = token $ do
 -- >>> ta args "(final T in, U out, int[][] matrix, String... str)"
 -- ["in","out","matrix","str"]
 args :: Stream s => S s [String]
-args = token $ parens (sepBy (symbol ",") arg)
+args = label "[argument]" . token $ parens (sepBy (symbol ",") arg)
 
 -- | parse a L-value from
 --
@@ -194,8 +196,8 @@ args = token $ parens (sepBy (symbol ",") arg)
 -- >>> ta arg "Drinks<T> c0ffee"
 -- "c0ffee"
 arg :: Stream s => S s String
-arg = token $ do
-  tidy -- skip the unnecesary
+arg = label "argument" . token $ do
+  leap -- skip the unnecesary
   _ <- option mempty anno -- annotation
   _ <- option mempty (symbol "final") -- final keyword
   _ <- typ -- type
