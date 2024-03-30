@@ -117,7 +117,7 @@ typ =
   token $
     symbol "void"
       <|> do
-        i <- iden -- object class name
+        i <- o'iden -- object/class name
         g <- option mempty generic -- diamond
         l <- option mempty (some $ symbol "[]") -- ndarry
         v <- option mempty (symbol "...") -- varargs
@@ -142,7 +142,7 @@ generic = token $ do
 anno :: Stream s => S s String
 anno = token $ do
   c <- char '@' -- sigil
-  n <- iden -- name
+  n <- o'iden -- name
   o <-
     option
       mempty
@@ -161,19 +161,22 @@ anno = token $ do
 -- >>> ta iden "c0ffee[][]"
 -- "c0ffee"
 iden :: Stream s => S s String
-iden = token $ do
-  c <- char '_' <|> alpha
-  o <- many alphaNum
-  return $ c : o
+iden = identifier javaDef <* option mempty (some $ symbol "[]")
 
--- | identifier with consuming the following nd-array notation
-iden' :: Stream s => S s String
-iden' = iden <* option mempty (some $ symbol "[]")
+-- | object name
+--
+-- >>> ta o'iden "_c0ffee"
+-- "_c0ffee"
+o'iden :: Stream s => S s String
+o'iden = token $ do
+  c <- alpha <|> char '_'
+  o <- many $ alphaNum <|> char '_'
+  return $ c : o
 
 -- | parse a list of L-value from an argument declaration
 --
--- >>> ta args "(final T int, U out, int[][] matrix, String... str)"
--- ["int","out","matrix","str"]
+-- >>> ta args "(final T in, U out, int[][] matrix, String... str)"
+-- ["in","out","matrix","str"]
 args :: Stream s => S s [String]
 args = token $ parens (sepBy (symbol ",") arg)
 
@@ -196,4 +199,4 @@ arg = token $ do
   _ <- option mempty anno -- annotation
   _ <- option mempty (symbol "final") -- final keyword
   _ <- typ -- type
-  iden' -- varname
+  iden -- varname

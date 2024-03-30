@@ -1,30 +1,30 @@
-# mac
+# os/ide/editer
 .DS_Store
-
-# windows
 Thumbs.db
-
-# emacs
 [#]*[#]
-
-# vim
 *.sw?
 *~
+/.vscode/
+/.idea/
 
-# c/c++ object file
+# c/c++/make
 *.o
-
-# Makefile
 *.d
-
-# python
-*.ipynb_checkpoints
-__pycache__
 
 # haskell
 .stack-work/
-dist-newstyle/
-dist/
-newdist/
+.stack-work.yaml
+.stack/
+.project
+.HIE/
+/dist/
+/dist-newstyle/
+/newdist/
+/.ghc.environment*
+/.ghci
 *.hi
 .hspec-failures
+
+# python
+__pycache__
+*.ipynb_checkpoints
