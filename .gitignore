@@ -1,15 +1,21 @@
-# os/ide/editer
+# os/ide/editor
 .DS_Store
 Thumbs.db
-[#]*[#]
 *.sw?
 *~
+[#]*[#]
 /.vscode/
 /.idea/
 
-# c/c++/make
+# c/c++ object file
 *.o
+
+# Makefile
 *.d
+
+# python
+*.ipynb_checkpoints
+__pycache__
 
 # haskell
 .stack-work/
@@ -19,12 +25,8 @@ Thumbs.db
 .HIE/
 /dist/
 /dist-newstyle/
-/newdist/
 /.ghc.environment*
 /.ghci
 *.hi
-.hspec-failures
 
-# python
-__pycache__
-*.ipynb_checkpoints
+# user-specific files

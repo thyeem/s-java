@@ -4,11 +4,11 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           scopometer
+name:           smeter
 version:        0.0.1
 description:    .
-homepage:       https://github.com/thyeem/scopometer#readme
-bug-reports:    https://github.com/thyeem/scopometer/issues
+homepage:       https://github.com/thyeem/smeter#readme
+bug-reports:    https://github.com/thyeem/smeter/issues
 author:         Francis Lim
 maintainer:     thyeem@gmail.com
 copyright:      2024 Francis
@@ -21,16 +21,16 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/thyeem/scopometer
+  location: https://github.com/thyeem/smeter
 
 library
   exposed-modules:
-      Scopometer
+      Code.Smeter
   other-modules:
-      Paths_scopometer
+      Paths_smeter
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans
   build-depends:
       base
     , here
@@ -41,27 +41,27 @@ executable ss
   main-is: Main.hs
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -O2
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base
     , here
     , s
-    , scopometer
+    , smeter
   default-language: Haskell2010
 
 test-suite doctest
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Paths_scopometer
+      Paths_smeter
   hs-source-dirs:
       test
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       Glob
     , base
     , doctest
     , here
     , s
-    , scopometer
+    , smeter
   default-language: Haskell2010

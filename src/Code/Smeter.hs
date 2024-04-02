@@ -1,6 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Scopometer (module Scopometer) where
+module Code.Smeter (module Code.Smeter) where
 
 import Data.String.Here
 import Text.S
@@ -88,22 +88,23 @@ header :: Stream s => S s (Lvalue, [Lvalue])
 header = do
   leap -- skip the unnecesary
   _ <- many (modifier <|> generic) -- modifier
-  _ <- typKwd <|> typ -- type or type-keyword
+  _ <- typedef <|> typ -- type or type-keyword
   i <- iden -- varname
   o <- option [] args -- (arg1, arg2, ..)
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  _ <- symbol "{"
-  return (i, o)
+  _ <- string "{"
+  pure (i, o)
+
+footer :: Stream s => S s ()
+footer = void . token $ symbol "}" <?> "closing }"
 
 -- | modifier
 modifier :: Stream s => S s String
-modifier =
-  label "modifier" . token . choice $
-    symbol <$> ["protected", "private", "public", "static", "final"]
+modifier = label "modifier" . token . choice $ symbol <$> ["protected", "private", "public", "static", "final"]
 
--- | type-keywords
-typKwd :: Stream s => S s String
-typKwd = label "type-keywords" . token . choice $ symbol <$> ["class", "interface"]
+-- | type definition keywords
+typedef :: Stream s => S s String
+typedef = label "typedef keyword" . token . choice $ symbol <$> ["class", "interface"]
 
 -- | type
 -- >>> ta typ "int[][] c0ffee"
@@ -119,11 +120,11 @@ typ =
   label "type" . token $
     symbol "void"
       <|> do
-        i <- o'iden -- object/class name
+        i <- var -- object name
         g <- option mempty generic -- diamond
         l <- option mempty (some $ symbol "[]") -- ndarry
         v <- option mempty (symbol "...") -- varargs
-        return $ concat [i, g, concat l, v]
+        pure $ concat [i, g, concat l, v]
 
 -- | generic diamond
 --
@@ -132,7 +133,7 @@ typ =
 generic :: Stream s => S s String
 generic = label "generic" . token $ do
   o <- angles (many $ anycharBut '>')
-  return $ "<" ++ o ++ ">"
+  pure $ "<" ++ o ++ ">"
 
 -- | annotations
 --
@@ -144,18 +145,17 @@ generic = label "generic" . token $ do
 anno :: Stream s => S s String
 anno = label "annotation" . token $ do
   c <- char '@' -- sigil
-  n <- o'iden -- name
+  n <- var -- anno varname
   o <-
     option
       mempty
       ( do
           p <- parens (many $ anycharBut ')')
-          return $ "(" ++ p ++ ")"
+          pure $ "(" ++ p ++ ")"
       ) -- optional (...)
-  return $ c : n ++ o
+  pure $ c : n ++ o
 
 -- | identifier
--- Use much simpler way -> iden = identifier javaDef
 --
 -- >>> ta iden "_c0ffee"
 -- "_c0ffee"
@@ -165,15 +165,12 @@ anno = label "annotation" . token $ do
 iden :: Stream s => S s String
 iden = identifier javaDef <* option mempty (some $ symbol "[]") <?> "identifier"
 
--- | object name
---
--- >>> ta o'iden "_c0ffee"
--- "_c0ffee"
-o'iden :: Stream s => S s String
-o'iden = label "object/class name" . token $ do
+-- | object/variable name NOT in the keyword set
+var :: Stream s => S s String
+var = label "object name" . token $ do
   c <- alpha <|> char '_'
-  o <- many $ alphaNum <|> char '_'
-  return $ c : o
+  o <- many (alphaNum <|> char '_')
+  pure $ c : o
 
 -- | parse a list of L-value from an argument declaration
 --
@@ -202,3 +199,43 @@ arg = label "argument" . token $ do
   _ <- option mempty (symbol "final") -- final keyword
   _ <- typ -- type
   iden -- varname
+
+-- | Primitive values
+prim :: Stream s => S s String
+prim = choice [bool, flt, int, chr, str]
+ where
+  bool = token $ string "true" <|> string "false"
+  int = token $ show <$> integer <* option mempty (string "L" <|> string "l")
+  flt = token $ show <$> float <* option mempty (string "F" <|> string "f")
+  chr = token $ pure <$> charLit' javaDef
+  str = token $ stringLit' javaDef
+
+-- | Expressions in Java
+jexp :: Stream s => S s String
+jexp = choice [prim]
+
+-- | Variable expression
+expr'var :: Stream s => S s String
+expr'var = iden
+
+-- | Primitive literals
+expr'prim :: Stream s => S s String
+expr'prim = prim
+
+-- | Instanceof expression
+expr'iof :: Stream s => S s String
+expr'iof = iden <* symbol "instanceof" <* var
+
+-- | Type cast expression
+expr'cast :: Stream s => S s String
+expr'cast = parens typ *> iden
+
+-- | Array access expression
+expr'idx :: Stream s => S s String
+expr'idx = jexp
+
+-- | Object creation expression
+expr'new :: Stream s => S s String
+expr'new = token $ symbol "new" *> var <* (option mempty generic >> arguments)
+ where
+  arguments = parens (sepBy (symbol ",") jexp)
