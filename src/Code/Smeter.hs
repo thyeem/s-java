@@ -232,7 +232,7 @@ expr'cast = parens typ *> iden
 
 -- | Array access expression
 expr'idx :: Stream s => S s String
-expr'idx = jexp
+expr'idx = expr'var <* (some $ squares expr'prim)
 
 -- | Object creation expression
 expr'new :: Stream s => S s String
