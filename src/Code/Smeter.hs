@@ -2,6 +2,7 @@
 
 module Code.Smeter (module Code.Smeter) where
 
+import Data.Functor (($>))
 import Data.String.Here
 import Text.S
 
@@ -200,9 +201,16 @@ arg = label "argument" . token $ do
   _ <- typ -- type
   iden -- varname
 
--- | Primitive values
-prim :: Stream s => S s String
-prim = choice [bool, flt, int, chr, str]
+-- | Expressions in Java
+jexp :: Stream s => S s String
+jexp = expr'op <|> factor
+
+factor :: Stream s => S s String
+factor = choice [expr'new, expr'cast, expr'iof, expr'idx, expr'var, expr'prim]
+
+-- | Primitive literals
+expr'prim :: Stream s => S s String
+expr'prim = choice [bool, flt, int, chr, str]
  where
   bool = token $ string "true" <|> string "false"
   int = token $ show <$> integer <* option mempty (string "L" <|> string "l")
@@ -210,17 +218,9 @@ prim = choice [bool, flt, int, chr, str]
   chr = token $ pure <$> charLit' javaDef
   str = token $ stringLit' javaDef
 
--- | Expressions in Java
-jexp :: Stream s => S s String
-jexp = choice [prim]
-
 -- | Variable expression
 expr'var :: Stream s => S s String
 expr'var = iden
-
--- | Primitive literals
-expr'prim :: Stream s => S s String
-expr'prim = prim
 
 -- | Instanceof expression
 expr'iof :: Stream s => S s String
@@ -232,10 +232,25 @@ expr'cast = parens typ *> iden
 
 -- | Array access expression
 expr'idx :: Stream s => S s String
-expr'idx = expr'var <* (some $ squares expr'prim)
+expr'idx = (parens jexp <|> expr'var) <* some (squares jexp)
 
 -- | Object creation expression
 expr'new :: Stream s => S s String
 expr'new = token $ symbol "new" *> var <* (option mempty generic >> arguments)
  where
   arguments = parens (sepBy (symbol ",") jexp)
+
+expr'op :: Stream s => S s String
+expr'op = expr atom table
+ where
+  bop sym = InfixL $ strip (symbol sym) $> (\x y -> unwords [x, sym, y])
+  pop sym = PrefixU $ strip (symbol sym) $> (\x -> unwords [sym, x])
+  qop sym = PostfixU $ strip (symbol sym) $> (\x -> unwords [x, sym])
+  atom = factor <|> parens expr'op
+  table =
+    [ [pop "-", pop "+"]
+    , [pop "++", pop "--", qop "++", qop "--"]
+    , [bop "^"]
+    , [bop "*", bop "/"]
+    , [bop "+", bop "-"]
+    ]
