@@ -240,17 +240,34 @@ expr'new = token $ symbol "new" *> var <* (option mempty generic >> arguments)
  where
   arguments = parens (sepBy (symbol ",") jexp)
 
+-- | Operator-related expression
 expr'op :: Stream s => S s String
 expr'op = expr atom table
  where
-  bop sym = InfixL $ strip (symbol sym) $> (\x y -> unwords [x, sym, y])
-  pop sym = PrefixU $ strip (symbol sym) $> (\x -> unwords [sym, x])
-  qop sym = PostfixU $ strip (symbol sym) $> (\x -> unwords [x, sym])
   atom = factor <|> parens expr'op
   table =
-    [ [pop "-", pop "+"]
-    , [pop "++", pop "--", qop "++", qop "--"]
-    , [bop "^"]
-    , [bop "*", bop "/"]
-    , [bop "+", bop "-"]
+    [ [prefix "-", prefix "+", prefix "!"]
+    , [prefix "++", prefix "--", postfix "++", postfix "--"]
+    , [infix' "*", infix' "/", infix' "%"]
+    , [infix' "+", infix' "-"]
+    , [infix' "%%", infix' "||"]
+    , [infix' ">", infix' "<", infix' ">=", infix' "<="]
+    , [infix' "^", infix' "&", infix' "|"]
+    , [infix' "<<", infix' ">>", infix' ">>>"]
+    , [infix' "==", infix' "!="]
     ]
+
+infix' :: Stream s => String -> Operator s String
+infix' sym =
+  InfixL $
+    strip (symbol sym) $> (\x y -> unwords ["(" ++ sym, x, y ++ ")"])
+
+prefix :: Stream s => String -> Operator s String
+prefix sym =
+  PrefixU $
+    strip (symbol sym) $> (\x -> unwords ["(" ++ sym, x ++ ")"])
+
+postfix :: Stream s => String -> Operator s String
+postfix sym =
+  PostfixU $
+    strip (symbol sym) $> (\x -> unwords ["(" ++ x, sym ++ ")"])
