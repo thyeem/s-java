@@ -1,7 +1,6 @@
 module Code.Smeter.Internal where
 
 import qualified Data.Map as M
-import Text.S
 
 type Lvalue = String
 
@@ -19,6 +18,3 @@ data Scope = Scope
   , s'gmap :: M.Map Lvalue Scope
   , s'vio :: [Violation]
   }
-
-scoper :: Stream s => S s Scope
-scoper = undefined

@@ -2,6 +2,7 @@
 
 module Code.Smeter.Parser where
 
+import Code.Smeter.Internal
 import Data.Functor (($>))
 import Data.String.Here
 import Text.S
@@ -48,8 +49,6 @@ public class ConcurrencyProblemDemo {
     }
 }
 |]
-
-type Lvalue = String
 
 token :: Stream s => S s a -> S s a
 token p = p <* leap
@@ -102,9 +101,10 @@ footer = void . token $ symbol "}" <?> "closing }"
 -- | Lambda header
 lambda :: Stream s => S s (Lvalue, [Lvalue])
 lambda = do
-  o <- option [] args -- (arg1, arg2, ..)
+  o <- option [] args' -- (arg1, arg2, ..)
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   -- Treat lambdas as an 'expression'
+  _ <- symbol "->"
   _ <- string "{"
   pure ("lambda", o)
 
@@ -261,7 +261,8 @@ expr'lam :: Stream s => S s String
 expr'lam = do
   o <- option [] args' -- (arg1, arg2, ..)
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  _ <- string "{"
+  _ <- symbol "->"
+  _ <- symbol "{"
   pure $ unwords o
 
 -- | Method invocation expression
