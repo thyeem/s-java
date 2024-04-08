@@ -99,6 +99,15 @@ header = do
 footer :: Stream s => S s ()
 footer = void . token $ symbol "}" <?> "closing }"
 
+-- | Lambda header
+lambda :: Stream s => S s (Lvalue, [Lvalue])
+lambda = do
+  o <- option [] args -- (arg1, arg2, ..)
+  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
+  -- Treat lambdas as an 'expression'
+  _ <- string "{"
+  pure ("lambda", o)
+
 -- | modifier
 modifier :: Stream s => S s String
 modifier = label "modifier" . token . choice $ symbol <$> ["protected", "private", "public", "static", "final"]
@@ -173,12 +182,12 @@ var = label "object name" . token $ do
   o <- many (alphaNum <|> char '_')
   pure $ c : o
 
--- | parse a list of L-value from an argument declaration
+-- | parse a list of L-value from arguments in declaration
 --
 -- >>> ta args "(final T in, U out, int[][] matrix, String... str)"
 -- ["in","out","matrix","str"]
 args :: Stream s => S s [String]
-args = label "[argument]" . token $ parens (sepBy (symbol ",") arg)
+args = label "[(type)-(argument)]" . token $ parens (sepBy (symbol ",") arg)
 
 -- | parse a L-value from
 --
@@ -200,6 +209,10 @@ arg = label "argument" . token $ do
   _ <- option mempty (symbol "final") -- final keyword
   _ <- typ -- type
   iden -- varname
+
+-- | parse a list of L-value from args in a @call@
+args' :: Stream s => S s [String]
+args' = label "[argument]" . token $ parens (sepBy (symbol ",") iden)
 
 -- | Expressions in Java
 jexp :: Stream s => S s String
@@ -240,6 +253,22 @@ expr'new = token $ symbol "new" *> var <* (option mempty generic >> arguments)
  where
   arguments = parens (sepBy (symbol ",") jexp)
 
+-- | Lambda expression
+expr'lam :: Stream s => S s String
+expr'lam = do
+  o <- option [] args' -- (arg1, arg2, ..)
+  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
+  _ <- string "{"
+  pure $ unwords o
+
+-- | Method invocation expression
+expr'call :: Stream s => S s String
+expr'call = do
+  r <- jexp <|> parens jexp
+  _ <- many (symbol "." *> iden)
+  a <- option [] args'
+  pure r
+
 -- | Operator-related expression
 expr'op :: Stream s => S s String
 expr'op = expr atom table
@@ -271,3 +300,7 @@ postfix :: Stream s => String -> Operator s String
 postfix sym =
   PostfixU $
     strip (symbol sym) $> (\x -> unwords ["(" ++ x, sym ++ ")"])
+
+-- | Assignment statement
+assign :: Stream s => S s String
+assign = undefined
