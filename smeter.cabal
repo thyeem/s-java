@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.35.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -35,6 +35,7 @@ library
   ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans
   build-depends:
       base
+    , containers
     , here
     , s
   default-language: Haskell2010
@@ -46,6 +47,7 @@ executable ss
   ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base
+    , containers
     , here
     , s
     , smeter
@@ -62,6 +64,7 @@ test-suite doctest
   build-depends:
       Glob
     , base
+    , containers
     , doctest
     , here
     , s

@@ -211,6 +211,9 @@ arg = label "argument" . token $ do
   iden -- varname
 
 -- | parse a list of L-value from args in a @call@
+--
+-- >>> ta (iden *> args') "fn(a, b, c)"
+-- ["a","b","c"]
 args' :: Stream s => S s [String]
 args' = label "[argument]" . token $ parens (sepBy (symbol ",") iden)
 
@@ -266,7 +269,7 @@ expr'call :: Stream s => S s String
 expr'call = do
   r <- jexp <|> parens jexp
   _ <- many (symbol "." *> iden)
-  a <- option [] args'
+  _ <- option [] args'
   pure r
 
 -- | Operator-related expression
