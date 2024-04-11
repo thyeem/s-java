@@ -217,42 +217,65 @@ arg = label "argument" . token $ do
 args' :: Stream s => S s [String]
 args' = label "[argument]" . token $ parens (sepBy (symbol ",") iden)
 
+data Jexp
+  = Null
+  | Bool String
+  | Int Integer
+  | Float Double
+  | CharL Char
+  | StrL String --  Primitive
+  | Iden Lvalue
+  | Prefix String Jexp
+  | Postfix String Jexp
+  | Infix String Jexp Jexp
+  | Index Lvalue
+  | InstOf Lvalue
+  | Cast Lvalue
+  | New String
+  | Call Jexp
+  deriving (Show)
+
 -- | Expressions in Java
-jexp :: Stream s => S s String
+jexp :: Stream s => S s Jexp
 jexp = expr'op <|> factor
 
-factor :: Stream s => S s String
-factor = choice [expr'new, expr'cast, expr'iof, expr'idx, expr'var, expr'prim]
+factor :: Stream s => S s Jexp
+factor = parens o <|> o
+ where
+  o = choice [expr'new, expr'cast, expr'iof, expr'idx, expr'var, expr'prim]
 
 -- | Primitive literals
-expr'prim :: Stream s => S s String
-expr'prim = choice [bool, flt, int, chr, str]
+expr'prim :: Stream s => S s Jexp
+expr'prim = choice [flt, int, chr, str, bool, null]
  where
-  bool = token $ string "true" <|> string "false"
-  int = token $ show <$> integer <* option mempty (string "L" <|> string "l")
-  flt = token $ show <$> float <* option mempty (string "F" <|> string "f")
-  chr = token $ pure <$> charLit' javaDef
-  str = token $ stringLit' javaDef
+  null = token $ string "null" $> Null
+  bool = token $ Bool <$> (string "true" <|> string "false")
+  int = token $ Int <$> integer <* option mempty (string "L" <|> string "l")
+  flt = token $ Float <$> float <* option mempty (string "F" <|> string "f")
+  chr = token $ CharL <$> charLit' javaDef
+  str = token $ StrL <$> stringLit' javaDef
 
 -- | Variable expression
-expr'var :: Stream s => S s String
-expr'var = iden
+expr'var :: Stream s => S s Jexp
+expr'var = Iden <$> iden
 
 -- | Instanceof expression
-expr'iof :: Stream s => S s String
-expr'iof = iden <* symbol "instanceof" <* var
+expr'iof :: Stream s => S s Jexp
+expr'iof = InstOf <$> iden <* symbol "instanceof" <* var
 
 -- | Type cast expression
-expr'cast :: Stream s => S s String
-expr'cast = parens typ *> iden
+expr'cast :: Stream s => S s Jexp
+expr'cast = Cast <$> (parens typ *> iden)
 
 -- | Array access expression
-expr'idx :: Stream s => S s String
-expr'idx = (parens jexp <|> expr'var) <* some (squares jexp)
+expr'idx :: Stream s => S s Jexp
+expr'idx = Index <$> (iden <* some (squares jexp))
 
 -- | Object creation expression
-expr'new :: Stream s => S s String
-expr'new = token $ symbol "new" *> var <* (option mempty generic >> arguments)
+expr'new :: Stream s => S s Jexp
+expr'new =
+  token $
+    New <$> (symbol "new" *> var <* (option mempty generic >> arguments))
  where
   arguments = parens (sepBy (symbol ",") jexp)
 
@@ -266,15 +289,15 @@ expr'lam = do
   pure $ unwords o
 
 -- | Method invocation expression
-expr'call :: Stream s => S s String
+expr'call :: Stream s => S s Jexp
 expr'call = do
-  r <- jexp <|> parens jexp
-  _ <- many (symbol "." *> iden)
+  e <- jexp
+  o <- many (symbol "." *> expr'var)
   _ <- option [] args'
-  pure r
+  pure . last $ e : o
 
 -- | Operator-related expression
-expr'op :: Stream s => S s String
+expr'op :: Stream s => S s Jexp
 expr'op = expr atom table
  where
   atom = factor <|> parens expr'op
@@ -290,21 +313,17 @@ expr'op = expr atom table
     , [infix' "==", infix' "!="]
     ]
 
-infix' :: Stream s => String -> Operator s String
-infix' sym =
-  InfixL $
-    strip (symbol sym) $> (\x y -> unwords ["(" ++ sym, x, y ++ ")"])
+infix' :: Stream s => String -> Operator s Jexp
+infix' sym = InfixL $ strip (symbol sym) $> Infix sym
 
-prefix :: Stream s => String -> Operator s String
-prefix sym =
-  PrefixU $
-    strip (symbol sym) $> (\x -> unwords ["(" ++ sym, x ++ ")"])
+prefix :: Stream s => String -> Operator s Jexp
+prefix sym = PrefixU $ strip (symbol sym) $> Prefix sym
 
-postfix :: Stream s => String -> Operator s String
-postfix sym =
-  PostfixU $
-    strip (symbol sym) $> (\x -> unwords ["(" ++ x, sym ++ ")"])
+postfix :: Stream s => String -> Operator s Jexp
+postfix sym = PostfixU $ strip (symbol sym) $> Postfix sym
 
 -- | Assignment statement
 assign :: Stream s => S s String
-assign = undefined
+assign = S $ \s fOk fErr ->
+  let fOk' a = fOk (a ++ "francis")
+   in unS anystring s fOk' fErr

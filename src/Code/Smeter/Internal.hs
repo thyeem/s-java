@@ -7,7 +7,7 @@ type Lvalue = String
 data Violation = Violation
   { v'level :: !(Int, Int) -- (cur, orig)
   , v'loc :: !(Int, Int) -- (line, col)
-  , v'var :: !String -- variable
+  , v'var :: !Lvalue -- variable
   , v'path :: !String -- scope path
   }
 
