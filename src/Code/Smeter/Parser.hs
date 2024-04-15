@@ -4,6 +4,7 @@ module Code.Smeter.Parser where
 
 import Code.Smeter.Internal
 import Data.Functor (($>))
+import Data.List (intercalate)
 import Data.String.Here
 import Text.S
 
@@ -90,7 +91,7 @@ header = do
   _ <- many (modifier <|> generic) -- modifier
   _ <- typedef <|> typ -- type or type-keyword
   i <- iden -- varname
-  o <- option [] args -- (arg1, arg2, ..)
+  o <- option [] args'decl
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   _ <- string "{"
   pure (i, o)
@@ -98,15 +99,7 @@ header = do
 footer :: Stream s => S s ()
 footer = void . token $ symbol "}" <?> "closing }"
 
--- | Lambda header
-lambda :: Stream s => S s (Lvalue, [Lvalue])
-lambda = do
-  o <- option [] args' -- (arg1, arg2, ..)
-  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  -- Treat lambdas as an 'expression'
-  _ <- symbol "->"
-  _ <- string "{"
-  pure ("lambda", o)
+--------------------------------------------------------------------------------
 
 -- | modifier
 modifier :: Stream s => S s String
@@ -130,7 +123,7 @@ typ =
   label "type" . token $
     symbol "void"
       <|> do
-        i <- var -- object name
+        i <- iden'obj -- type name
         g <- option mempty generic -- diamond
         l <- option mempty (some $ symbol "[]") -- ndarry
         v <- option mempty (symbol "...") -- varargs
@@ -141,9 +134,9 @@ typ =
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
 generic :: Stream s => S s String
-generic = label "generic" . token $ do
-  o <- angles (many $ anycharBut '>')
-  pure $ "<" ++ o ++ ">"
+generic =
+  label "generic" . token $
+    angles (many $ anycharBut '>') >>= \p -> pure $ "<" ++ p ++ ">"
 
 -- | annotations
 --
@@ -155,94 +148,90 @@ generic = label "generic" . token $ do
 anno :: Stream s => S s String
 anno = label "annotation" . token $ do
   c <- char '@' -- sigil
-  n <- var -- anno varname
-  o <-
+  n <- iden'obj -- anno varname
+  o <- -- optional (...)
     option
       mempty
-      ( do
-          p <- parens (many $ anycharBut ')')
-          pure $ "(" ++ p ++ ")"
-      ) -- optional (...)
+      (parens (many $ anycharBut ')') >>= \p -> pure $ "(" ++ p ++ ")")
   pure $ c : n ++ o
 
 -- | identifier
 --
 -- >>> ta iden "_c0ffee"
 -- "_c0ffee"
---
--- >>> ta iden "c0ffee[][]"
--- "c0ffee"
 iden :: Stream s => S s String
-iden = identifier javaDef <* option mempty (some $ symbol "[]") <?> "identifier"
+iden = identifier javaDef <?> "identifier"
 
--- | object/variable name NOT in the keyword set
-var :: Stream s => S s String
-var = label "object name" . token $ do
+-- | identifier with relative path
+--
+-- >>> ta idenpath "coffee.ethiopia.handrip"
+-- "coffee.ethiopia.handrip"
+idenpath :: Stream s => S s String
+idenpath = iden >>= \i -> intercalate "." . (i :) <$> many (symbol "." *> iden)
+
+-- | identifier for declaration
+--
+-- >>> ta iden'decl "_c0ffee[][]"
+-- "_c0ffee"
+iden'decl :: Stream s => S s String
+iden'decl = identifier javaDef <* option mempty (some $ symbol "[]") <?> "identifier"
+
+-- | identifier for object
+iden'obj :: Stream s => S s String
+iden'obj = label "object name" . token $ do
   c <- alpha <|> char '_'
   o <- many (alphaNum <|> char '_')
   pure $ c : o
 
 -- | parse a list of L-value from arguments in declaration
 --
--- >>> ta args "(final T in, U out, int[][] matrix, String... str)"
+-- >>> ta args'decl "(final T in, U out, int[][] matrix, String... str)"
 -- ["in","out","matrix","str"]
-args :: Stream s => S s [String]
-args = label "[(type)-(argument)]" . token $ parens (sepBy (symbol ",") arg)
-
--- | parse a L-value from
---
--- >>> ta arg "@atCafe string c0ffee"
--- "c0ffee"
---
--- >>> ta arg "int[][] c0ffee"
--- "c0ffee"
---
--- >>> ta arg "final string... c0ffee"
--- "c0ffee"
---
--- >>> ta arg "Drinks<T> c0ffee"
--- "c0ffee"
-arg :: Stream s => S s String
-arg = label "argument" . token $ do
-  leap -- skip the unnecesary
-  _ <- option mempty anno -- annotation
-  _ <- option mempty (symbol "final") -- final keyword
-  _ <- typ -- type
-  iden -- varname
-
--- | parse a list of L-value from args in a @call@
---
--- >>> ta (iden *> args') "fn(a, b, c)"
--- ["a","b","c"]
-args' :: Stream s => S s [String]
-args' = label "[argument]" . token $ parens (sepBy (symbol ",") iden)
+args'decl :: Stream s => S s [String]
+args'decl = label "[type-iden]" . token $ parens (sepBy (symbol ",") arg)
+ where
+  arg = option mempty anno *> option mempty (symbol "final") *> typ *> iden'decl
 
 data Jexp
-  = Null
-  | Bool String
-  | Int Integer
-  | Float Double
-  | CharL Char
-  | StrL String --  Primitive
-  | Iden Lvalue
-  | Prefix String Jexp
-  | Postfix String Jexp
-  | Infix String Jexp Jexp
-  | Index Lvalue
-  | InstOf Lvalue
-  | Cast Lvalue
-  | New String
-  | Call Jexp
+  = Null -- primitive null
+  | Bool String -- primitive true/false
+  | Int Integer -- primitive integer
+  | Float Double -- primitive float
+  | Char Char -- char literal
+  | Str String -- string literal
+  | Iden String -- iden-path
+  | Prefix String Jexp -- unary prefix
+  | Postfix String Jexp -- unary postfix
+  | Infix String Jexp Jexp -- binary infix
+  | Index String -- array access
+  | InstOf String -- instanceOf
+  | Cast String -- type casting
+  | New String -- new object
+  | Lambda String -- lambda expression
+  | Call String -- method invocation
   deriving (Show)
+
+instance Pretty Jexp
 
 -- | Expressions in Java
 jexp :: Stream s => S s Jexp
 jexp = expr'op <|> factor
 
+-- | Unit expressions with the highest priority
 factor :: Stream s => S s Jexp
-factor = parens o <|> o
+factor = parens e <|> e
  where
-  o = choice [expr'new, expr'cast, expr'iof, expr'idx, expr'var, expr'prim]
+  e =
+    choice
+      [ expr'call
+      , expr'lam
+      , expr'new
+      , expr'cast
+      , expr'iof
+      , expr'idx
+      , expr'iden
+      , expr'prim
+      ]
 
 -- | Primitive literals
 expr'prim :: Stream s => S s Jexp
@@ -252,16 +241,12 @@ expr'prim = choice [flt, int, chr, str, bool, null]
   bool = token $ Bool <$> (string "true" <|> string "false")
   int = token $ Int <$> integer <* option mempty (string "L" <|> string "l")
   flt = token $ Float <$> float <* option mempty (string "F" <|> string "f")
-  chr = token $ CharL <$> charLit' javaDef
-  str = token $ StrL <$> stringLit' javaDef
-
--- | Variable expression
-expr'var :: Stream s => S s Jexp
-expr'var = Iden <$> iden
+  chr = token $ Char <$> charLit' javaDef
+  str = token $ Str <$> stringLit' javaDef
 
 -- | Instanceof expression
 expr'iof :: Stream s => S s Jexp
-expr'iof = InstOf <$> iden <* symbol "instanceof" <* var
+expr'iof = InstOf <$> iden <* symbol "instanceof" <* iden'obj
 
 -- | Type cast expression
 expr'cast :: Stream s => S s Jexp
@@ -275,26 +260,35 @@ expr'idx = Index <$> (iden <* some (squares jexp))
 expr'new :: Stream s => S s Jexp
 expr'new =
   token $
-    New <$> (symbol "new" *> var <* (option mempty generic >> arguments))
+    New <$> (symbol "new" *> iden'obj <* (option mempty generic >> arguments))
  where
   arguments = parens (sepBy (symbol ",") jexp)
 
+-- | Variable expression
+expr'iden :: Stream s => S s Jexp
+expr'iden = Iden <$> idenpath
+
 -- | Lambda expression
-expr'lam :: Stream s => S s String
-expr'lam = do
-  o <- option [] args' -- (arg1, arg2, ..)
-  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  _ <- symbol "->"
-  _ <- symbol "{"
-  pure $ unwords o
+expr'lam :: Stream s => S s Jexp
+expr'lam = token $ do
+  a <- option [] args'decl
+  _ <- token $ symbol "->"
+  e <- jexp
+  pure $ Lambda $ concat ["(", intercalate ", " (show <$> a), ") -> ", show e]
 
 -- | Method invocation expression
 expr'call :: Stream s => S s Jexp
-expr'call = do
-  e <- jexp
-  o <- many (symbol "." *> expr'var)
-  _ <- option [] args'
-  pure . last $ e : o
+expr'call = token $ do
+  i <- idenpath
+  a <- args'expr
+  pure . Call $ concat [i, "(", intercalate ", " (show <$> a), ")"]
+
+-- | parse a list of L-value from args in a @call@
+--
+-- >>> ta (iden *> args'expr) "fn(a, b, c)"
+-- [Iden "a",Iden "b",Iden "c"]
+args'expr :: Stream s => S s [Jexp]
+args'expr = label "[Jexp]" . token $ parens (sepBy (symbol ",") jexp)
 
 -- | Operator-related expression
 expr'op :: Stream s => S s Jexp
