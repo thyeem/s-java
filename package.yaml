@@ -28,7 +28,7 @@ library:
   source-dirs: src
 
 executables:
-  ss:
+  smeter:
     main: Main.hs
     source-dirs: app
     ghc-options:

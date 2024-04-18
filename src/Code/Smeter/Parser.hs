@@ -16,6 +16,7 @@ import Text.S
   , angles'
   , anycharBut
   , anystring
+  , braces'
   , char
   , charLit'
   , choice
@@ -111,15 +112,15 @@ public class ConcurrencyProblemDemo {
 --
 -- >>> ta header "public static byte[] hexStringToByteArray(String str) {"
 -- ("hexStringToByteArray",["str"])
-header :: Stream s => S s (Lvalue, [Lvalue])
+header :: Stream s => S s [Jexp]
 header = do
   _ <- many (modifier <|> generic) -- modifier
   _ <- typedef <|> typ -- type or type-keyword
-  i <- iden -- varname
-  o <- option [] args'decl
+  _ <- iden -- varname
+  a <- option [] (args'decl False)
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   _ <- symbol "{"
-  pure (i, o)
+  pure a
 
 footer :: Stream s => S s ()
 footer = void . token $ symbol "}" <?> "closing }"
@@ -142,6 +143,9 @@ angles = angles' javaDef
 
 parens :: Stream s => S s a -> S s a
 parens = parens' javaDef
+
+braces :: Stream s => S s a -> S s a
+braces = braces' javaDef
 
 symbol :: Stream s => String -> S s String
 symbol = symbol' javaDef
@@ -220,15 +224,6 @@ iden'obj = token $ do
   o <- many (alphaNum <|> char '_')
   pure $ c : o
 
--- | parse a list of L-value from arguments in declaration
---
--- >>> ta args'decl "(final T in, U out, int[][] matrix, String... str)"
--- ["in","out","matrix","str"]
-args'decl :: Stream s => S s [String]
-args'decl = token $ parens (sepBy (symbol ",") arg)
- where
-  arg = option mempty anno *> option mempty (symbol "final") *> typ *> iden'decl
-
 data Jexp
   = Null -- primitive null
   | Bool String -- primitive true/false
@@ -242,7 +237,7 @@ data Jexp
   | Cast String Jexp -- type casting
   | New String [Jexp] -- new object
   | Call Jexp [Jexp] -- method invocation
-  | Lambda String -- lambda expression
+  | Lambda [Jexp] [Jstmt] -- lambda expression
   | Prefix String Jexp -- op: unary prefix
   | Postfix String Jexp -- op: unary postfix
   | Infix String Jexp Jexp -- op: binary infix
@@ -321,10 +316,9 @@ expr'new = token $ do
 -- | Lambda expression
 expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
-  a <- option [] args'decl
+  a <- option [] (args'decl True)
   _ <- token $ symbol "->"
-  e <- jexp
-  pure . Lambda $ concat ["(", intercalate ", " (show <$> a), ") -> ", show e]
+  Lambda a <$> (jstmts <|> (: []) . Expr <$> jexp)
 
 -- | Method invocation expression
 expr'call :: Stream s => S s Jexp
@@ -332,7 +326,21 @@ expr'call = token $ do
   i <- idenpath
   Call (Iden i) <$> args'expr
 
--- | parse a list of L-value from args in a @call@
+-- | Parse L-values from a list of arguments in declaration
+--
+-- >>> ta args'decl "(final T in, U out, int[][] matrix, String... str)"
+-- ["in","out","matrix","str"]
+args'decl :: Stream s => Bool -> S s [Jexp]
+args'decl optType = token $ parens (sepBy (symbol ",") arg)
+ where
+  pair = typ *> var
+  var = Iden <$> iden'decl
+  arg =
+    option mempty anno
+      *> option mempty (symbol "final")
+      *> (if optType then pair <|> var else typ *> var)
+
+-- | Parse L-values from a list of 'Jexp' arguments
 --
 -- >>> ta (iden *> args'expr) "fn(a, b, c)"
 -- [Iden "a",Iden "b",Iden "c"]
@@ -371,5 +379,23 @@ assign = S $ \s fOk fErr ->
   let fOk' a = fOk (a ++ "francis")
    in unS anystring s fOk' fErr
 
-stmt :: Stream s => S s String
-stmt = undefined
+data Jstmt
+  = NS [Jstmt]
+  | Expr Jexp
+  | Assign Jexp Jexp
+  deriving (Show)
+
+instance Pretty Jstmt
+
+jstmt :: Stream s => S s Jstmt
+jstmt = undefined
+
+jstmts :: Stream s => S s [Jstmt]
+jstmts =
+  sepBy (symbol ";") jstmt >>= \s ->
+    if length s == 1
+      then option mempty (symbol ";") $> s
+      else pure s
+
+stmt'block :: Stream s => S s [Jstmt]
+stmt'block = braces jstmts
