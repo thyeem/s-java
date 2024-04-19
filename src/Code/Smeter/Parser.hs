@@ -1,11 +1,8 @@
-{-# LANGUAGE QuasiQuotes #-}
-
 module Code.Smeter.Parser where
 
 import Code.Smeter.Internal
 import Data.Functor (($>))
 import Data.List (intercalate)
-import Data.String.Here
 import Text.S
   ( Operator (..)
   , Pretty (..)
@@ -21,7 +18,7 @@ import Text.S
   , charLit'
   , choice
   , expr
-  , float
+  , floatB
   , identifier'
   , integer
   , javaDef
@@ -40,49 +37,6 @@ import Text.S
   , (<?>)
   , (<|>)
   )
-
-src :: String
-src =
-  [here|
-class Counter {
-    private int count = 0;
-
-    public void increment() {
-        count = count + 1;
-    }
-
-    public int getCount() {
-        return count;
-    }
-}
-
-public class ConcurrencyProblemDemo {
-    public static void main(String[] args) throws InterruptedException {
-        final Counter counter = new Counter();
-
-        Thread thread1 = new Thread(() -> {
-            for (int i = 0; i < 1000; i++) {
-                counter.increment();
-            }
-        });
-
-        Thread thread2 = new Thread(() -> {
-            for (int i = 0; i < 1000; i++) {
-                counter.increment();
-            }
-        });
-
-        thread1.start();
-        thread2.start();
-
-        thread1.join();
-        thread2.join();
-
-        System.out.println("Expected count is 2000");
-        System.out.println("Actual count is " + counter.getCount());
-    }
-}
-|]
 
 -- | header of a new scope
 --
@@ -117,13 +71,10 @@ header = do
   _ <- many (modifier <|> generic) -- modifier
   _ <- typedef <|> typ -- type or type-keyword
   _ <- iden -- varname
-  a <- option [] (args'decl False)
+  a <- args'decl False
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   _ <- symbol "{"
   pure a
-
-footer :: Stream s => S s ()
-footer = void . token $ symbol "}" <?> "closing }"
 
 -- | modifier
 modifier :: Stream s => S s String
@@ -208,7 +159,9 @@ iden = identifier' javaDef <?> "identifier"
 -- >>> ta idenpath "coffee.ethiopia.handrip"
 -- "coffee.ethiopia.handrip"
 idenpath :: Stream s => S s String
-idenpath = iden >>= \i -> intercalate "." . (i :) <$> many (symbol "." *> iden)
+idenpath =
+  iden >>= \i ->
+    intercalate "." . (i :) <$> many (symbol "." *> iden)
 
 -- | identifier for declaration
 --
@@ -272,7 +225,7 @@ expr'prim = choice [flt, int, chr, str, bool, null]
   null = symbol "null" $> Null
   bool = Bool <$> (symbol "true" <|> symbol "false")
   int = token $ Int <$> integer <* option mempty (symbol "L" <|> symbol "l")
-  flt = token $ Float <$> float <* option mempty (symbol "F" <|> symbol "f")
+  flt = token $ Float <$> floatB <* option mempty (symbol "F" <|> symbol "f")
   chr = token $ Char <$> charLit' javaDef
   str = token $ Str <$> stringLit' javaDef
 
@@ -316,7 +269,7 @@ expr'new = token $ do
 -- | Lambda expression
 expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
-  a <- option [] (args'decl True)
+  a <- args'decl True
   _ <- token $ symbol "->"
   Lambda a <$> (jstmts <|> (: []) . Expr <$> jexp)
 
@@ -381,8 +334,8 @@ assign = S $ \s fOk fErr ->
 
 data Jstmt
   = NS [Jstmt]
-  | Expr Jexp
   | Assign Jexp Jexp
+  | Expr Jexp
   deriving (Show)
 
 instance Pretty Jstmt
