@@ -1,6 +1,6 @@
-name:                smeter
+name:                ss
 version:             0.0.1
-github:              thyeem/smeter
+github:              thyeem/ss
 license:             MIT
 author:              Francis Lim
 maintainer:          thyeem@gmail.com
@@ -28,7 +28,7 @@ library:
   source-dirs: src
 
 executables:
-  smeter:
+  ss:
     main: Main.hs
     source-dirs: app
     ghc-options:
@@ -36,10 +36,10 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - smeter
+    - ss
     when:
     - condition: false
-      other-modules: Paths_smeter
+      other-modules: Paths_ss
 
 tests:
   doctest:
@@ -52,4 +52,4 @@ tests:
     dependencies:
     - Glob
     - doctest
-    - smeter
+    - ss

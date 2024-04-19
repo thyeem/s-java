@@ -4,11 +4,11 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           smeter
+name:           ss
 version:        0.0.1
 description:    .
-homepage:       https://github.com/thyeem/smeter#readme
-bug-reports:    https://github.com/thyeem/smeter/issues
+homepage:       https://github.com/thyeem/ss#readme
+bug-reports:    https://github.com/thyeem/ss/issues
 author:         Francis Lim
 maintainer:     thyeem@gmail.com
 copyright:      2024 Francis
@@ -21,15 +21,15 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/thyeem/smeter
+  location: https://github.com/thyeem/ss
 
 library
   exposed-modules:
-      Code.Smeter
-      Code.Smeter.Internal
-      Code.Smeter.Parser
+      Code.SS
+      Code.SS.Internal
+      Code.SS.Parser
   other-modules:
-      Paths_smeter
+      Paths_ss
   hs-source-dirs:
       src
   ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans
@@ -40,7 +40,7 @@ library
     , s
   default-language: Haskell2010
 
-executable smeter
+executable ss
   main-is: Main.hs
   hs-source-dirs:
       app
@@ -50,14 +50,14 @@ executable smeter
     , containers
     , here
     , s
-    , smeter
+    , ss
   default-language: Haskell2010
 
 test-suite doctest
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Paths_smeter
+      Paths_ss
   hs-source-dirs:
       test
   ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
@@ -68,5 +68,5 @@ test-suite doctest
     , doctest
     , here
     , s
-    , smeter
+    , ss
   default-language: Haskell2010

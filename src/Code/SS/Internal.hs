@@ -1,6 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Code.Smeter.Internal where
+module Code.SS.Internal where
 
 import qualified Data.Map as M
 import Data.String.Here

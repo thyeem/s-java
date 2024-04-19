@@ -1,6 +1,6 @@
-module Code.Smeter.Parser where
+module Code.SS.Parser where
 
-import Code.Smeter.Internal
+import Code.SS.Internal
 import Data.Functor (($>))
 import Data.List (intercalate)
 import Text.S
