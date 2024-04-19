@@ -237,8 +237,6 @@ expr'iof = token $ do
   o <- iden'obj
   pure $ InstOf o (Iden i)
 
--- expr'iof = InstOf <$> iden <* symbol "instanceof" <* iden'obj
-
 -- | Type cast expression
 expr'cast :: Stream s => S s Jexp
 expr'cast = token $ do
@@ -252,19 +250,22 @@ expr'idx = token $ do
   x <- some (squares jexp)
   pure $ Index (Iden i) x
 
--- Index <$> (iden <* some (squares jexp))
-
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
 expr'iden = Iden <$> idenpath
 
 -- | Object creation expression
+--
+-- >>> ta expr'new "new Object(\"obj\", 'Q', 12.345)"
+-- New "Object" [Str "obj",Char 'Q',Float 12.345]
+--
+-- >>> ta expr'new "new int[]{new Integer(1), Integer.valueOf(2), 3}"
+-- New "int[]" [New "Integer" [Int 1],Call (Iden "Integer.valueOf") [Int 2],Int 3]
 expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   _ <- symbol "new"
-  o <- iden'obj
-  g <- option mempty generic
-  New (o ++ g) <$> args'expr
+  t <- typ
+  New t <$> (args'expr <|> args'arr)
 
 -- | Lambda expression
 expr'lam :: Stream s => S s Jexp
@@ -299,6 +300,12 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
 -- [Iden "a",Iden "b",Iden "c"]
 args'expr :: Stream s => S s [Jexp]
 args'expr = token $ parens (sepBy (symbol ",") jexp)
+
+-- | Parse L-values from array initialization expression
+-- >>> ta (iden *> args'expr) "fn(a, b, c)"
+-- [Iden "a",Iden "b",Iden "c"]
+args'arr :: Stream s => S s [Jexp]
+args'arr = token $ braces (sepBy (symbol ",") jexp)
 
 -- | Operator-related expression
 expr'op :: Stream s => S s Jexp
