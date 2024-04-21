@@ -191,6 +191,7 @@ data Jexp
   | New String [Jexp] -- new object
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] [Jstmt] -- lambda expression
+  | Cond Jexp Jexp Jexp -- ternary expression
   | Prefix String Jexp -- op: unary prefix
   | Postfix String Jexp -- op: unary postfix
   | Infix String Jexp Jexp -- op: binary infix
@@ -200,7 +201,7 @@ instance Pretty Jexp
 
 -- | Expressions in Java
 jexp :: Stream s => S s Jexp
-jexp = expr'op <|> factor
+jexp = expr'cond <|> expr'op <|> factor
 
 -- | Unit expressions with the highest priority
 factor :: Stream s => S s Jexp
@@ -271,8 +272,11 @@ expr'new = token $ do
 expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
   a <- args'decl True
-  _ <- token $ symbol "->"
+  _ <- symbol "->"
   Lambda a <$> (jstmts <|> (: []) . Expr <$> jexp)
+
+-- where
+-- e = expr'op <|> parens expr'cond <|> factor
 
 -- | Method invocation expression
 expr'call :: Stream s => S s Jexp
@@ -307,11 +311,22 @@ args'expr = token $ parens (sepBy (symbol ",") jexp)
 args'arr :: Stream s => S s [Jexp]
 args'arr = token $ braces (sepBy (symbol ",") jexp)
 
+-- | Ternary expression
+expr'cond :: Stream s => S s Jexp
+expr'cond = token $ do
+  c <- e
+  _ <- symbol "?"
+  x <- e
+  _ <- symbol ":"
+  Cond c x <$> e
+ where
+  e = parens expr'cond <|> expr'op <|> factor
+
 -- | Operator-related expression
 expr'op :: Stream s => S s Jexp
 expr'op = expr atom table
  where
-  atom = factor <|> parens expr'op
+  atom = factor <|> parens expr'op <|> expr'cond
   table =
     [ [prefix "-", prefix "+", prefix "!"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]

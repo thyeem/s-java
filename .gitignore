@@ -23,8 +23,8 @@ __pycache__
 .stack/
 .project
 .HIE/
-/dist/
-/dist-newstyle/
+dist/
+dist-newstyle/
 /.ghc.environment*
 /.ghci
 *.hi
