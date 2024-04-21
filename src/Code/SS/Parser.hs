@@ -38,33 +38,36 @@ import Text.S
   , (<|>)
   )
 
+-- $setup
+-- >>> import Text.S
+
 -- | header of a new scope
 --
--- >>> ta header "class Counter {"
+-- ta header "class Counter {"
 -- ("Counter",[])
 --
--- >>> ta header "public class ConcurrencyProblemDemo {"
+-- ta header "public class ConcurrencyProblemDemo {"
 -- ("ConcurrencyProblemDemo",[])
 --
--- >>> ta header "    public static void main(String[] args) throws InterruptedException {"
+-- ta header "    public static void main(String[] args) throws InterruptedException {"
 -- ("main",["args"])
 --
--- >>> ta header "    public static void gcd(int n1, int n2) {"
+-- ta header "    public static void gcd(int n1, int n2) {"
 -- ("gcd",["n1","n2"])
 --
--- >>> ta header "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
+-- ta header "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
 -- ("fn",["in","out","matrix","str"])
 --
--- >>> ta header "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
+-- ta header "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
 -- ("getHMACSHA512",["signatureKey","textToHash"])
 --
--- >>> ta header "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
+-- ta header "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
 -- ("calculateHMAC",["signatureKey","textToHash"])
 --
--- >>> ta header "private static String toHexString(byte[] bytes) {"
+-- ta header "private static String toHexString(byte[] bytes) {"
 -- ("toHexString",["bytes"])
 --
--- >>> ta header "public static byte[] hexStringToByteArray(String str) {"
+-- ta header "public static byte[] hexStringToByteArray(String str) {"
 -- ("hexStringToByteArray",["str"])
 header :: Stream s => S s [Jexp]
 header = do
@@ -192,9 +195,9 @@ data Jexp
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] [Jstmt] -- lambda expression
   | Cond Jexp Jexp Jexp -- ternary expression
-  | Prefix String Jexp -- op: unary prefix
-  | Postfix String Jexp -- op: unary postfix
-  | Infix String Jexp Jexp -- op: binary infix
+  | Prefix String Jexp -- prefix unary operator
+  | Postfix String Jexp -- postfix unary operator
+  | Infix String Jexp Jexp -- binary infix operator
   deriving (Show)
 
 instance Pretty Jexp
@@ -202,6 +205,8 @@ instance Pretty Jexp
 -- | Expressions in Java
 jexp :: Stream s => S s Jexp
 jexp = expr'cond <|> expr'op <|> factor
+
+-- jexp = expr'cond <|> expr'op <|> factor
 
 -- | Unit expressions with the highest priority
 factor :: Stream s => S s Jexp
@@ -231,6 +236,9 @@ expr'prim = choice [flt, int, chr, str, bool, null]
   str = token $ Str <$> stringLit' javaDef
 
 -- | Instanceof expression
+--
+-- >>> ta expr'iof "name instanceof String"
+-- InstOf "String" (Iden "name")
 expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
   i <- idenpath
@@ -239,12 +247,18 @@ expr'iof = token $ do
   pure $ InstOf o (Iden i)
 
 -- | Type cast expression
+--
+-- >>> ta expr'cast "(int) floating"
+-- Cast "int" (Iden "floating")
 expr'cast :: Stream s => S s Jexp
 expr'cast = token $ do
   t <- parens typ
   Cast t . Iden <$> idenpath
 
 -- | Array access expression
+--
+-- >>> ta expr'idx "arr[i][0]"
+-- Index (Iden "arr") [Iden "i",Int 0]
 expr'idx :: Stream s => S s Jexp
 expr'idx = token $ do
   i <- idenpath
@@ -257,11 +271,11 @@ expr'iden = Iden <$> idenpath
 
 -- | Object creation expression
 --
--- >>> ta expr'new "new Object(\"obj\", 'Q', 12.345)"
--- New "Object" [Str "obj",Char 'Q',Float 12.345]
+-- >>> ta expr'new "new Object(\"obj\", 'Q', 12.34)"
+-- New "Object" [Str "obj",Char 'Q',Float 12.34]
 --
--- >>> ta expr'new "new int[]{new Integer(1), Integer.valueOf(2), 3}"
--- New "int[]" [New "Integer" [Int 1],Call (Iden "Integer.valueOf") [Int 2],Int 3]
+-- >>> ta expr'new "new int[]{1, 2, 3}"
+-- New "int[]" [Int 1,Int 2,Int 3]
 expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   _ <- symbol "new"
@@ -275,19 +289,23 @@ expr'lam = token $ do
   _ <- symbol "->"
   Lambda a <$> (jstmts <|> (: []) . Expr <$> jexp)
 
--- where
--- e = expr'op <|> parens expr'cond <|> factor
-
 -- | Method invocation expression
+--
+-- >>> ta expr'call "Integer.valueOf(2)"
+-- Call (Iden "Integer.valueOf") [Int 2]
 expr'call :: Stream s => S s Jexp
 expr'call = token $ do
   i <- idenpath
   Call (Iden i) <$> args'expr
 
 -- | Parse L-values from a list of arguments in declaration
+-- If 'optType' is set, bare-type variables are admitted.
 --
--- >>> ta args'decl "(final T in, U out, int[][] matrix, String... str)"
--- ["in","out","matrix","str"]
+-- >>> ta (args'decl False) "(final U out, int[][] matrix, String... str)"
+-- [Iden "out",Iden "matrix",Iden "str"]
+--
+-- >>> ta (args'decl True) "(out, matrix, str)"
+-- [Iden "out",Iden "matrix",Iden "str"]
 args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
@@ -300,33 +318,43 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
 
 -- | Parse L-values from a list of 'Jexp' arguments
 --
--- >>> ta (iden *> args'expr) "fn(a, b, c)"
+-- >>> ta args'expr "(a,b,c)"
 -- [Iden "a",Iden "b",Iden "c"]
 args'expr :: Stream s => S s [Jexp]
 args'expr = token $ parens (sepBy (symbol ",") jexp)
 
 -- | Parse L-values from array initialization expression
--- >>> ta (iden *> args'expr) "fn(a, b, c)"
--- [Iden "a",Iden "b",Iden "c"]
+--
+-- >>> ta args'arr "{1,2,3}"
+-- [Int 1,Int 2,Int 3]
 args'arr :: Stream s => S s [Jexp]
 args'arr = token $ braces (sepBy (symbol ",") jexp)
 
 -- | Ternary expression
+--
+-- >>> ta expr'cond "(10 > 5) ? 1 : 0"
+-- Cond (Infix ">" (Int 10) (Int 5)) (Int 1) (Int 0)
 expr'cond :: Stream s => S s Jexp
 expr'cond = token $ do
-  c <- e
+  c <- atom
   _ <- symbol "?"
-  x <- e
+  x <- atom
   _ <- symbol ":"
-  Cond c x <$> e
+  Cond c x <$> atom
  where
-  e = parens expr'cond <|> expr'op <|> factor
+  atom = choice [parens expr'cond, expr'op, factor]
 
 -- | Operator-related expression
+--
+-- >>> ta expr'op "fn(5) % 2 != 0"
+-- Infix "!=" (Infix "%" (Call (Iden "fn") [Int 5]) (Int 2)) (Int 0)
+--
+-- >>> ta expr'op "(5 > 3) && (8 > 5)"
+-- Infix "&&" (Infix ">" (Int 5) (Int 3)) (Infix ">" (Int 8) (Int 5))
 expr'op :: Stream s => S s Jexp
 expr'op = expr atom table
  where
-  atom = factor <|> parens expr'op <|> expr'cond
+  atom = choice [factor, parens expr'op, parens expr'cond]
   table =
     [ [prefix "-", prefix "+", prefix "!"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]
