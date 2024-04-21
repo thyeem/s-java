@@ -1,6 +1,5 @@
 module Code.SS.Parser where
 
-import Code.SS.Internal
 import Data.Functor (($>))
 import Data.List (intercalate)
 import Text.S
@@ -12,7 +11,6 @@ import Text.S
   , alphaNum
   , angles'
   , anycharBut
-  , anystring
   , braces'
   , char
   , charLit'
@@ -33,7 +31,6 @@ import Text.S
   , stringLit'
   , symbol'
   , token'
-  , void
   , (<?>)
   , (<|>)
   )
@@ -340,6 +337,7 @@ postfix sym = PostfixU $ symbol sym $> Postfix sym
 data Jstmt
   = Scope String [Jexp] [Jstmt] -- new scope
   | Assign Jexp Jexp -- assignment
+  | Return Jexp -- return statement
   | Expr Jexp -- expression statement
   deriving (Show)
 
@@ -347,7 +345,12 @@ instance Pretty Jstmt
 
 -- | Java statement parser
 jstmt :: Stream s => S s Jstmt
-jstmt = choice [stmt'expr]
+jstmt =
+  choice
+    [ stmt'scope
+    , stmt'expr
+    , stmt'ret
+    ]
 
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
@@ -359,51 +362,44 @@ jstmts =
 
 -- | New scope statment
 --
--- ta stmt'scope "class Counter { coffee.drip(\"ethiopia\"); }"
--- ("Counter",[])
+-- ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
+-- Scope "hexStringToByteArray" [Iden "str"] []
 --
--- ta stmt'scope "public class ConcurrencyProblemDemo {"
--- ("ConcurrencyProblemDemo",[])
+-- ta stmt'scope "static void main(String[] args) throws Exception {}"
+-- Scope "main" [Iden "args"] []
 --
--- ta stmt'scope "static void main(String[] args) throws InterruptedException {"
--- ("main",["args"])
+-- ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
+-- Scope "fn" [Iden "in",Iden "out",Iden "matrix",Iden "str"] []
 --
--- ta stmt'scope "public static void gcd(int n1, int n2) {"
--- ("gcd",["n1","n2"])
---
--- ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
--- ("fn",["in","out","matrix","str"])
---
--- ta stmt'scope "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
--- ("getHMACSHA512",["signatureKey","textToHash"])
---
--- ta stmt'scope "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
--- ("calculateHMAC",["signatureKey","textToHash"])
+-- ta stmt'scope "public static void mod(int a, int b) { return a % b; }"
+-- Scope "mod" [Iden "a",Iden "b"] [Return (Infix "%" (Iden "a") (Iden "b"))]
 --
 -- ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
 -- Scope "toHexString" [Iden "bytes"] [Expr (Infix "+" (Int 3) (Int 5))]
 --
--- ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
--- Scope "hexStringToByteArray" [Iden "str"] []
+-- ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
+-- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   _ <- option mempty (many modifier) -- modifiers
   _ <- option mempty generic -- generic
   n <- (typedef *> iden'obj) <|> (typ *> iden) -- name of scope
-  a <- args'decl False -- type-iden pairs in argument declaration
+  a <- option [] (args'decl False) -- type-iden pairs in argument declaration
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   Scope n a <$> stmt'block
 
 -- | Expression statement
 stmt'expr :: Stream s => S s Jstmt
-stmt'expr = Expr <$> jexp <* option mempty (symbol ";")
+stmt'expr = Expr <$> jexp
 
 -- | Block statement
 stmt'block :: Stream s => S s [Jstmt]
 stmt'block = braces jstmts <* option mempty (symbol ";")
 
 -- | Assignment statement
-stmt'let :: Stream s => S s String
-stmt'let = S $ \s fOk fErr ->
-  let fOk' a = fOk (a ++ "francis")
-   in unS anystring s fOk' fErr
+stmt'let :: Stream s => S s Jstmt
+stmt'let = undefined
+
+-- | Return statement
+stmt'ret :: Stream s => S s Jstmt
+stmt'ret = symbol "return" *> (Return <$> jexp)
