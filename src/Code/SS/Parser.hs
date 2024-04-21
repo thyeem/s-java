@@ -41,52 +41,6 @@ import Text.S
 -- $setup
 -- >>> import Text.S
 
--- | header of a new scope
---
--- ta header "class Counter {"
--- ("Counter",[])
---
--- ta header "public class ConcurrencyProblemDemo {"
--- ("ConcurrencyProblemDemo",[])
---
--- ta header "    public static void main(String[] args) throws InterruptedException {"
--- ("main",["args"])
---
--- ta header "    public static void gcd(int n1, int n2) {"
--- ("gcd",["n1","n2"])
---
--- ta header "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
--- ("fn",["in","out","matrix","str"])
---
--- ta header "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
--- ("getHMACSHA512",["signatureKey","textToHash"])
---
--- ta header "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
--- ("calculateHMAC",["signatureKey","textToHash"])
---
--- ta header "private static String toHexString(byte[] bytes) {"
--- ("toHexString",["bytes"])
---
--- ta header "public static byte[] hexStringToByteArray(String str) {"
--- ("hexStringToByteArray",["str"])
-header :: Stream s => S s [Jexp]
-header = do
-  _ <- many (modifier <|> generic) -- modifier
-  _ <- typedef <|> typ -- type or type-keyword
-  _ <- iden -- varname
-  a <- args'decl False
-  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  _ <- symbol "{"
-  pure a
-
--- | modifier
-modifier :: Stream s => S s String
-modifier = label "modifier" . choice $ symbol <$> ["protected", "private", "public", "static", "final"]
-
--- | type definition keywords
-typedef :: Stream s => S s String
-typedef = label "typedef keyword" . choice $ symbol <$> ["class", "interface"]
-
 --------------------------------------------------------------------------------
 
 token :: Stream s => S s a -> S s a
@@ -103,6 +57,14 @@ braces = braces' javaDef
 
 symbol :: Stream s => String -> S s String
 symbol = symbol' javaDef
+
+-- | modifier
+modifier :: Stream s => S s String
+modifier = choice $ symbol <$> ["protected", "private", "public", "static", "final"]
+
+-- | type definition keywords
+typedef :: Stream s => S s String
+typedef = choice $ symbol <$> ["class", "interface"]
 
 -- | type
 -- >>> ta typ "int[][] c0ffee"
@@ -193,7 +155,7 @@ data Jexp
   | Cast String Jexp -- type casting
   | New String [Jexp] -- new object
   | Call Jexp [Jexp] -- method invocation
-  | Lambda [Jexp] [Jstmt] -- lambda expression
+  | Lambda [Jexp] Jstmt -- lambda expression
   | Cond Jexp Jexp Jexp -- ternary expression
   | Prefix String Jexp -- prefix unary operator
   | Postfix String Jexp -- postfix unary operator
@@ -204,9 +166,7 @@ instance Pretty Jexp
 
 -- | Expressions in Java
 jexp :: Stream s => S s Jexp
-jexp = expr'cond <|> expr'op <|> factor
-
--- jexp = expr'cond <|> expr'op <|> factor
+jexp = choice [expr'cond, expr'op, factor]
 
 -- | Unit expressions with the highest priority
 factor :: Stream s => S s Jexp
@@ -283,11 +243,12 @@ expr'new = token $ do
   New t <$> (args'expr <|> args'arr)
 
 -- | Lambda expression
+-- Lambda in Java consists of expr-statement and block-statement
 expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
   a <- args'decl True
   _ <- symbol "->"
-  Lambda a <$> (jstmts <|> (: []) . Expr <$> jexp)
+  Lambda a <$> (stmt'expr <|> (Scope mempty a <$> stmt'block))
 
 -- | Method invocation expression
 --
@@ -376,23 +337,19 @@ prefix sym = PrefixU $ symbol sym $> Prefix sym
 postfix :: Stream s => String -> Operator s Jexp
 postfix sym = PostfixU $ symbol sym $> Postfix sym
 
--- | Assignment statement
-assign :: Stream s => S s String
-assign = S $ \s fOk fErr ->
-  let fOk' a = fOk (a ++ "francis")
-   in unS anystring s fOk' fErr
-
 data Jstmt
-  = NS [Jstmt]
-  | Assign Jexp Jexp
-  | Expr Jexp
+  = Scope String [Jexp] [Jstmt] -- new scope
+  | Assign Jexp Jexp -- assignment
+  | Expr Jexp -- expression statement
   deriving (Show)
 
 instance Pretty Jstmt
 
+-- | Java statement parser
 jstmt :: Stream s => S s Jstmt
-jstmt = undefined
+jstmt = choice [stmt'expr]
 
+-- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
 jstmts =
   sepBy (symbol ";") jstmt >>= \s ->
@@ -400,5 +357,53 @@ jstmts =
       then option mempty (symbol ";") $> s
       else pure s
 
+-- | New scope statment
+--
+-- ta stmt'scope "class Counter { coffee.drip(\"ethiopia\"); }"
+-- ("Counter",[])
+--
+-- ta stmt'scope "public class ConcurrencyProblemDemo {"
+-- ("ConcurrencyProblemDemo",[])
+--
+-- ta stmt'scope "static void main(String[] args) throws InterruptedException {"
+-- ("main",["args"])
+--
+-- ta stmt'scope "public static void gcd(int n1, int n2) {"
+-- ("gcd",["n1","n2"])
+--
+-- ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {"
+-- ("fn",["in","out","matrix","str"])
+--
+-- ta stmt'scope "public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception{"
+-- ("getHMACSHA512",["signatureKey","textToHash"])
+--
+-- ta stmt'scope "public static String calculateHMAC(byte signatureKey[], String textToHash) {"
+-- ("calculateHMAC",["signatureKey","textToHash"])
+--
+-- ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
+-- Scope "toHexString" [Iden "bytes"] [Expr (Infix "+" (Int 3) (Int 5))]
+--
+-- ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
+-- Scope "hexStringToByteArray" [Iden "str"] []
+stmt'scope :: Stream s => S s Jstmt
+stmt'scope = do
+  _ <- option mempty (many modifier) -- modifiers
+  _ <- option mempty generic -- generic
+  n <- (typedef *> iden'obj) <|> (typ *> iden) -- name of scope
+  a <- args'decl False -- type-iden pairs in argument declaration
+  _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
+  Scope n a <$> stmt'block
+
+-- | Expression statement
+stmt'expr :: Stream s => S s Jstmt
+stmt'expr = Expr <$> jexp <* option mempty (symbol ";")
+
+-- | Block statement
 stmt'block :: Stream s => S s [Jstmt]
-stmt'block = braces jstmts
+stmt'block = braces jstmts <* option mempty (symbol ";")
+
+-- | Assignment statement
+stmt'let :: Stream s => S s String
+stmt'let = S $ \s fOk fErr ->
+  let fOk' a = fOk (a ++ "francis")
+   in unS anystring s fOk' fErr
