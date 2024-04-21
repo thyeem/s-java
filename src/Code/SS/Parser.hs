@@ -20,7 +20,6 @@ import Text.S
   , identifier'
   , integer
   , javaDef
-  , label
   , many
   , option
   , parens'
@@ -38,20 +37,23 @@ import Text.S
 -- $setup
 -- >>> import Text.S
 
---------------------------------------------------------------------------------
-
+-- | Parser for Java token
 token :: Stream s => S s a -> S s a
 token = token' javaDef
 
+-- | Parser for < .. >
 angles :: Stream s => S s a -> S s a
 angles = angles' javaDef
 
+-- | Parser for ( .. )
 parens :: Stream s => S s a -> S s a
 parens = parens' javaDef
 
+-- | Parser for { .. }
 braces :: Stream s => S s a -> S s a
 braces = braces' javaDef
 
+-- | Parser for given strings
 symbol :: Stream s => String -> S s String
 symbol = symbol' javaDef
 
@@ -74,14 +76,13 @@ typedef = choice $ symbol <$> ["class", "interface"]
 -- "String..."
 typ :: Stream s => S s String
 typ =
-  label "type" . token $
-    symbol "void"
-      <|> do
-        i <- iden'obj -- type name
-        g <- option mempty generic -- diamond
-        l <- option mempty (some $ symbol "[]") -- ndarry
-        v <- option mempty (symbol "...") -- varargs
-        pure $ concat [i, g, concat l, v]
+  token $
+    symbol "void" <|> do
+      i <- iden'typ -- type name
+      g <- option mempty generic -- diamond
+      l <- option mempty (some $ symbol "[]") -- ndarry
+      v <- option mempty (symbol "...") -- varargs
+      pure $ concat [i, g, concat l, v]
 
 -- | generic diamond
 --
@@ -89,7 +90,7 @@ typ =
 -- "<T,U>"
 generic :: Stream s => S s String
 generic =
-  label "generic" . token $
+  token $
     angles (many $ anycharBut '>') >>= \p -> pure $ "<" ++ p ++ ">"
 
 -- | annotations
@@ -100,9 +101,9 @@ generic =
 -- >>> ta anno "@SuppressWarnings(bool=false) public"
 -- "@SuppressWarnings(bool=false)"
 anno :: Stream s => S s String
-anno = label "annotation" . token $ do
+anno = token $ do
   c <- char '@' -- sigil
-  n <- iden'obj -- anno varname
+  n <- iden'typ -- anno varname
   o <- -- optional (...)
     option
       mempty
@@ -125,6 +126,16 @@ idenpath =
   iden >>= \i ->
     intercalate "." . (i :) <$> many (symbol "." *> iden)
 
+-- | identifier for type/object
+--
+-- >>> ta iden'typ "int"
+-- "int"
+iden'typ :: Stream s => S s String
+iden'typ = token $ do
+  c <- alpha <|> char '_'
+  o <- many (alphaNum <|> char '_')
+  pure $ c : o
+
 -- | identifier for declaration
 --
 -- >>> ta iden'decl "_c0ffee[][]"
@@ -132,13 +143,7 @@ idenpath =
 iden'decl :: Stream s => S s String
 iden'decl = iden <* option mempty (some $ symbol "[]")
 
--- | identifier for object
-iden'obj :: Stream s => S s String
-iden'obj = token $ do
-  c <- alpha <|> char '_'
-  o <- many (alphaNum <|> char '_')
-  pure $ c : o
-
+-- | Definition of Java expression
 data Jexp
   = Null -- primitive null
   | Bool String -- primitive true/false
@@ -200,7 +205,7 @@ expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
   i <- idenpath
   _ <- symbol "instanceof"
-  o <- iden'obj
+  o <- iden'typ
   pure $ InstOf o (Iden i)
 
 -- | Type cast expression
@@ -245,7 +250,7 @@ expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
   a <- args'decl True
   _ <- symbol "->"
-  Lambda a <$> (stmt'expr <|> (Scope mempty a <$> stmt'block))
+  Lambda a <$> (stmt'expr <|> (Scope mempty a <$> bare'block))
 
 -- | Method invocation expression
 --
@@ -334,6 +339,7 @@ prefix sym = PrefixU $ symbol sym $> Prefix sym
 postfix :: Stream s => String -> Operator s Jexp
 postfix sym = PostfixU $ symbol sym $> Postfix sym
 
+-- | Definition of Java statement
 data Jstmt
   = Scope String [Jexp] [Jstmt] -- new scope
   | Assign Jexp Jexp -- assignment
@@ -348,8 +354,10 @@ jstmt :: Stream s => S s Jstmt
 jstmt =
   choice
     [ stmt'scope
-    , stmt'expr
+    , stmt'let
     , stmt'ret
+    , stmt'expr
+    , stmt'bare
     ]
 
 -- | Java [statement] parser
@@ -359,6 +367,10 @@ jstmts =
     if length s == 1
       then option mempty (symbol ";") $> s
       else pure s
+
+-- | Bare block parser
+bare'block :: Stream s => S s [Jstmt]
+bare'block = braces jstmts <* option mempty (symbol ";")
 
 -- | New scope statment
 --
@@ -383,18 +395,10 @@ stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   _ <- option mempty (many modifier) -- modifiers
   _ <- option mempty generic -- generic
-  n <- (typedef *> iden'obj) <|> (typ *> iden) -- name of scope
+  n <- (typedef *> iden'typ) <|> (typ *> iden) -- name of scope
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
-  Scope n a <$> stmt'block
-
--- | Expression statement
-stmt'expr :: Stream s => S s Jstmt
-stmt'expr = Expr <$> jexp
-
--- | Block statement
-stmt'block :: Stream s => S s [Jstmt]
-stmt'block = braces jstmts <* option mempty (symbol ";")
+  Scope n a <$> bare'block
 
 -- | Assignment statement
 stmt'let :: Stream s => S s Jstmt
@@ -403,3 +407,11 @@ stmt'let = undefined
 -- | Return statement
 stmt'ret :: Stream s => S s Jstmt
 stmt'ret = symbol "return" *> (Return <$> jexp)
+
+-- | Expression statement
+stmt'expr :: Stream s => S s Jstmt
+stmt'expr = Expr <$> jexp
+
+-- | Bare-block statement
+stmt'bare :: Stream s => S s Jstmt
+stmt'bare = Scope mempty [] <$> bare'block
