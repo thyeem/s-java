@@ -22,22 +22,6 @@ import Data.String.Here
 -- , s'vio :: [Violation]
 -- }
 
-src0 :: String
-src0 =
-  [here|
-class Counter {
-    private int count = 0;
-
-    public void increment() {
-        count = count + 1;
-    }
-
-    public int getCount() {
-        return count;
-    }
-}
-|]
-
 src :: String
 src =
   [here|

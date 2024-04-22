@@ -345,7 +345,9 @@ postfix sym = PostfixU $ symbol sym $> Postfix sym
 
 -- | Definition of Java statement
 data Jstmt
-  = Scope String [Jexp] [Jstmt] -- new scope
+  = Package Jexp -- package statement
+  | Import Jexp -- import statement
+  | Scope String [Jexp] [Jstmt] -- new scope
   | Assign Jexp Jexp -- assignment/declaration
   | Return Jexp -- return statement
   | Flow String -- flow control statement
@@ -362,7 +364,9 @@ instance Pretty Jstmt
 jstmt :: Stream s => S s Jstmt
 jstmt =
   choice
-    [ stmt'scope
+    [ stmt'pack
+    , stmt'scope
+    , stmt'import
     , stmt'block
     , stmt'if
     , stmt'for
@@ -378,7 +382,7 @@ jstmts = do
   a <- many $ jstmt >>= \s -> (if need'st s then s <$ symbol ";" else pure s)
   x <- many jstmt
   if
-      | null a -> option mempty (symbol ";") $> a ++ x -- single statement
+      | null a -> option mempty (symbol ";") $> x -- single statement
       | null x -> pure a -- well-formed multiple statement
       | otherwise -> symbol ";" $> a ++ x -- malformed multiple statement
 
@@ -390,6 +394,8 @@ need'st = \case
     Flow {} -> True
     Return {} -> True
     _ -> False
+  Package {} -> True
+  Import {} -> True
   Assign {} -> True
   Return {} -> True
   Flow {} -> True
@@ -463,6 +469,18 @@ stmt'ret = symbol "return" *> (Return <$> jexp)
 -- Expr (Call (Iden "bean.roasted") [])
 stmt'expr :: Stream s => S s Jstmt
 stmt'expr = Expr <$> jexp
+
+-- | Package statement
+stmt'pack :: Stream s => S s Jstmt
+stmt'pack = Package <$> (symbol "package" *> expr'iden)
+
+-- | Import statement
+stmt'import :: Stream s => S s Jstmt
+stmt'import = do
+  _ <- symbol "import" *> option mempty (symbol "static")
+  i <- idenpath
+  a <- option mempty (symbol ".*")
+  pure . Import . Iden $ i ++ a
 
 -- | Flow control statement
 --
