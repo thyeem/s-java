@@ -1,3 +1,6 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
+
 module Code.SS.Parser where
 
 import Data.Functor (($>))
@@ -162,6 +165,7 @@ data Jexp
   | Prefix String Jexp -- prefix unary operator
   | Postfix String Jexp -- postfix unary operator
   | Infix String Jexp Jexp -- binary infix operator
+  | O -- nil expression
   deriving (Show)
 
 instance Pretty Jexp
@@ -250,7 +254,7 @@ expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
   a <- args'decl True
   _ <- symbol "->"
-  Lambda a <$> (stmt'expr <|> (Scope mempty a <$> bare'block))
+  Lambda a <$> (stmt'expr <|> (Scope "\\" a <$> bare'block))
 
 -- | Method invocation expression
 --
@@ -342,9 +346,14 @@ postfix sym = PostfixU $ symbol sym $> Postfix sym
 -- | Definition of Java statement
 data Jstmt
   = Scope String [Jexp] [Jstmt] -- new scope
-  | Assign Jexp Jexp -- assignment
+  | Assign Jexp Jexp -- assignment/declaration
   | Return Jexp -- return statement
+  | Flow String -- flow control statement
   | Expr Jexp -- expression statement
+  | If Jexp Jstmt [Jstmt] -- if-statement
+  | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
+  | For Jstmt -- for-statement
+  | While Jexp Jstmt -- while-statement
   deriving (Show)
 
 instance Pretty Jstmt
@@ -354,19 +363,38 @@ jstmt :: Stream s => S s Jstmt
 jstmt =
   choice
     [ stmt'scope
-    , stmt'let
+    , stmt'block
+    , stmt'if
+    , stmt'for
     , stmt'ret
+    , stmt'let
+    , stmt'flow
     , stmt'expr
-    , stmt'bare
     ]
 
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
-jstmts =
-  sepBy (symbol ";") jstmt >>= \s ->
-    if length s == 1
-      then option mempty (symbol ";") $> s
-      else pure s
+jstmts = do
+  a <- many $ jstmt >>= \s -> (if need'st s then s <$ symbol ";" else pure s)
+  x <- many jstmt
+  if
+      | null a -> option mempty (symbol ";") $> a ++ x -- single statement
+      | null x -> pure a -- well-formed multiple statement
+      | otherwise -> symbol ";" $> a ++ x -- malformed multiple statement
+
+-- | Check if the ST (statement terminator or ';') is needed
+need'st :: Jstmt -> Bool
+need'st = \case
+  If _ e _ -> case e of -- single statement, e in If-statement
+    Expr {} -> True
+    Flow {} -> True
+    Return {} -> True
+    _ -> False
+  Assign {} -> True
+  Return {} -> True
+  Flow {} -> True
+  Expr {} -> True
+  _ -> False
 
 -- | Bare block parser
 bare'block :: Stream s => S s [Jstmt]
@@ -374,44 +402,103 @@ bare'block = braces jstmts <* option mempty (symbol ";")
 
 -- | New scope statment
 --
--- ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
+-- >>> ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
 -- Scope "hexStringToByteArray" [Iden "str"] []
 --
--- ta stmt'scope "static void main(String[] args) throws Exception {}"
+-- >>> ta stmt'scope "static void main(String[] args) throws Exception {}"
 -- Scope "main" [Iden "args"] []
 --
--- ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
+-- >>> ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
 -- Scope "fn" [Iden "in",Iden "out",Iden "matrix",Iden "str"] []
 --
--- ta stmt'scope "public static void mod(int a, int b) { return a % b; }"
+-- >>> ta stmt'scope "public static void mod(int a, int b) { return a % b; }"
 -- Scope "mod" [Iden "a",Iden "b"] [Return (Infix "%" (Iden "a") (Iden "b"))]
 --
--- ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
+-- >>> ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
 -- Scope "toHexString" [Iden "bytes"] [Expr (Infix "+" (Int 3) (Int 5))]
 --
--- ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
+-- >>> ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
 -- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   _ <- option mempty (many modifier) -- modifiers
   _ <- option mempty generic -- generic
-  n <- (typedef *> iden'typ) <|> (typ *> iden) -- name of scope
+  n <- (typedef *> iden'typ) <|> (typ *> iden) -- name of scope (mempty for bare-block)
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
   _ <- many (alpha <|> char ',' <|> space) -- till the first occurrences of '{'
   Scope n a <$> bare'block
 
+-- | Bare-block statement
+--
+-- >>> ta stmt'block "{ Coffee coffee = bean.roasted(); }"
+-- Scope "" [] [Assign (Iden "coffee") (Call (Iden "bean.roasted") [])]
+stmt'block :: Stream s => S s Jstmt
+stmt'block = Scope mempty [] <$> bare'block
+
 -- | Assignment statement
+--
+-- >>> ta stmt'let "int number"
+-- Assign (Iden "number") O
+--
+-- >>> ta stmt'let "int number = 5"
+-- Assign (Iden "number") (Int 5)
 stmt'let :: Stream s => S s Jstmt
-stmt'let = undefined
+stmt'let = do
+  _ <- option mempty (many modifier) -- modifiers
+  ( ((typ *> iden) <|> iden) >>= \i ->
+      Assign (Iden i) <$> (symbol "=" *> jexp) -- (type) iden = jexp;
+    )
+    <|> ((typ *> iden) >>= \i -> pure (Assign (Iden i) O)) -- type iden;
 
 -- | Return statement
+--
+-- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
+-- Return (Cond (Infix ">" (Int 10) (Int 5)) (Int 1) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
 stmt'ret = symbol "return" *> (Return <$> jexp)
 
 -- | Expression statement
+--
+-- >>> ta stmt'expr "bean.roasted()"
+-- Expr (Call (Iden "bean.roasted") [])
 stmt'expr :: Stream s => S s Jstmt
 stmt'expr = Expr <$> jexp
 
--- | Bare-block statement
-stmt'bare :: Stream s => S s Jstmt
-stmt'bare = Scope mempty [] <$> bare'block
+-- | Flow control statement
+--
+-- >>> ta stmt'flow "continue"
+-- Flow "continue"
+--
+-- >>> ta stmt'flow "break"
+-- Flow "break"
+stmt'flow :: Stream s => S s Jstmt
+stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
+
+-- | if-statement
+--
+-- >>> ta stmt'if "if (a > b) {} else {}"
+-- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
+stmt'if :: Stream s => S s Jstmt
+stmt'if = do
+  if'cond <- symbol "if" *> parens jexp -- if (condition)
+  if' <- choice [stmt'ret, stmt'flow, stmt'expr] <|> stmt'block -- if {}
+  elif' <- many $ do
+    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
+    Else elif'cond <$> stmt'block -- else if {}
+  else' <- option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {}
+  pure $ If if'cond if' (elif' ++ else')
+
+-- | for-statement
+--
+-- >>> ta stmt'for "for (int i=0;i<10;i++) {}"
+-- For (Scope "" [] [Assign (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 10)),Expr (Postfix "++" (Iden "i"))])
+stmt'for :: Stream s => S s Jstmt
+stmt'for = do
+  _ <- symbol "for"
+  a <- parens (sepBy (symbol ";") (stmt'expr <|> stmt'let)) -- for-loop (header)
+  b <- bare'block -- for {}
+  pure $ For (Scope mempty [] (a ++ b))
+
+-- | while-statement
+stmt'while :: Stream s => S s Jstmt
+stmt'while = undefined
