@@ -154,7 +154,8 @@ data Jexp
   | Float Double -- primitive float
   | Char Char -- char literal
   | Str String -- string literal
-  | Iden String -- iden-path
+  | Iden String -- identifier
+  | Array [Jexp] -- array initialization
   | Index Jexp [Jexp] -- array access
   | InstOf String Jexp -- instanceOf
   | Cast String Jexp -- type casting
@@ -185,6 +186,7 @@ factor = parens e <|> e
       , expr'new
       , expr'cast
       , expr'iof
+      , expr'arr
       , expr'idx
       , expr'iden
       , expr'prim
@@ -220,6 +222,10 @@ expr'cast :: Stream s => S s Jexp
 expr'cast = token $ do
   t <- parens typ
   Cast t . Iden <$> idenpath
+
+-- | Array initialization expression
+expr'arr :: Stream s => S s Jexp
+expr'arr = Array <$> args'arr
 
 -- | Array access expression
 --
@@ -471,10 +477,16 @@ stmt'expr :: Stream s => S s Jstmt
 stmt'expr = Expr <$> jexp
 
 -- | Package statement
+--
+-- >>> ta stmt'pack "package com.example.math"
+-- Package (Iden "com.example.math")
 stmt'pack :: Stream s => S s Jstmt
 stmt'pack = Package <$> (symbol "package" *> expr'iden)
 
 -- | Import statement
+--
+-- >>> ta stmt'import "import java.util.*"
+-- Import (Iden "java.util.*")
 stmt'import :: Stream s => S s Jstmt
 stmt'import = do
   _ <- symbol "import" *> option mempty (symbol "static")
@@ -499,7 +511,7 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
   if'cond <- symbol "if" *> parens jexp -- if (condition)
-  if' <- choice [stmt'ret, stmt'flow, stmt'expr] <|> stmt'block -- if {}
+  if' <- stmt'block <|> choice [stmt'ret, stmt'flow, stmt'expr] -- if {}
   elif' <- many $ do
     elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
     Else elif'cond <$> stmt'block -- else if {}
@@ -512,8 +524,10 @@ stmt'if = do
 -- For (Scope "" [] [Assign (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 10)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
-  _ <- symbol "for"
-  a <- parens (sepBy (symbol ";") (stmt'expr <|> stmt'let)) -- for-loop (header)
+  let p = stmt'let <|> stmt'expr
+  let foreach = sepBy (symbol ":") p -- (int i : ix)
+  let classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
+  a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
   b <- bare'block -- for {}
   pure $ For (Scope mempty [] (a ++ b))
 
