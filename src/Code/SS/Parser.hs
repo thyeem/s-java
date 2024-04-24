@@ -360,8 +360,15 @@ data Jstmt
   | Expr Jexp -- expression statement
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
+  | Switch Jexp [Jstmt] -- switch-statement
+  | Case Jexp [Jstmt] -- case clause (only valid in switch-statement)
+  | Try Jstmt [Jstmt] -- try-catch-finally statement
+  | Catch Jexp [Jstmt] -- catch block (only valid in try-statement)
   | For Jstmt -- for-statement
   | While Jexp Jstmt -- while-statement
+  | Do Jstmt Jexp -- do-while-statement
+  | Throw Jexp -- throw statement
+  | Sync Jexp Jstmt -- synchronized statement
   deriving (Show)
 
 instance Pretty Jstmt
@@ -376,6 +383,9 @@ jstmt =
     , stmt'block
     , stmt'if
     , stmt'for
+    , stmt'while
+    , stmt'switch
+    , stmt'throw
     , stmt'ret
     , stmt'let
     , stmt'flow
@@ -395,18 +405,20 @@ jstmts = do
 -- | Check if the ST (statement terminator or ';') is needed
 need'st :: Jstmt -> Bool
 need'st = \case
-  If _ e _ -> case e of -- single statement, e in If-statement
-    Expr {} -> True
-    Flow {} -> True
-    Return {} -> True
-    _ -> False
   Package {} -> True
   Import {} -> True
   Assign {} -> True
   Return {} -> True
+  Throw {} -> True
   Flow {} -> True
   Expr {} -> True
-  _ -> False
+  Do {} -> True -- do-while
+  If _ e _ -> case e of
+    Expr {} -> True -- single expr in if-body
+    Flow {} -> True -- break/continue
+    Return {} -> True -- return
+    _ -> False -- multiple statment cases
+  _ -> False -- otherwise
 
 -- | Bare block parser
 bare'block :: Stream s => S s [Jstmt]
@@ -504,6 +516,13 @@ stmt'import = do
 stmt'flow :: Stream s => S s Jstmt
 stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 
+-- | Throw statement
+--
+-- >>> ta stmt'throw "throw new IllegalArgumentException(e)"
+-- Throw (New "IllegalArgumentException" [Iden "e"])
+stmt'throw :: Stream s => S s Jstmt
+stmt'throw = Throw <$> (symbol "throw" *> jexp)
+
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
@@ -511,12 +530,28 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
   if'cond <- symbol "if" *> parens jexp -- if (condition)
-  if' <- stmt'block <|> choice [stmt'ret, stmt'flow, stmt'expr] -- if {}
+  if' <- stmt'block <|> choice [stmt'ret, stmt'flow, stmt'expr] -- if {..} or single
   elif' <- many $ do
     elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
-    Else elif'cond <$> stmt'block -- else if {}
-  else' <- option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {}
+    Else elif'cond <$> stmt'block -- else if {..}
+  else' <- option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
   pure $ If if'cond if' (elif' ++ else')
+
+-- | switch statement
+--
+-- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
+-- Switch (Iden "a") [Case (Int 1) [Flow "break"],Case O [Expr (Int 2)]]
+stmt'switch :: Stream s => S s Jstmt
+stmt'switch = do
+  e <- symbol "switch" *> parens jexp -- switch (expr)
+  Switch e
+    <$> braces
+      ( some $ do
+          v <-
+            (symbol "case" *> jexp <* symbol ":") -- case expr:
+              <|> (symbol "default" *> symbol ":" $> O) -- default:
+          Case v <$> jstmts -- case body
+      )
 
 -- | for-statement
 --
@@ -528,9 +563,20 @@ stmt'for = do
   let foreach = sepBy (symbol ":") p -- (int i : ix)
   let classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
-  b <- bare'block -- for {}
+  b <- bare'block -- for {..}
   pure $ For (Scope mempty [] (a ++ b))
 
--- | while-statement
+-- | while/do-while statement
+--
+-- >>> ta stmt'while "while (a < 5) {a++;}"
+-- While (Infix "<" (Iden "a") (Int 5)) (Scope "" [] [Expr (Postfix "++" (Iden "a"))])
+--
+-- >>> ta stmt'while "do {a++;} while (a < 5)"
+-- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
-stmt'while = undefined
+stmt'while =
+  (symbol "while" *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
+    <|> ( symbol "do" *> stmt'block
+            >>= \b ->
+              (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
+        ) -- do {..} while (cond)
