@@ -4,13 +4,11 @@
 module Code.SS.Parser where
 
 import Data.Functor (($>))
-import Data.List (intercalate)
 import Text.S
   ( Operator (..)
   , Pretty (..)
   , S (..)
   , Stream
-  , alpha
   , alphaNum
   , angles'
   , anycharBut
@@ -19,33 +17,35 @@ import Text.S
   , char
   , charLit'
   , choice
+  , cmtB'
+  , cmtL'
   , expr
   , floatB
+  , hexadecimal
   , identifier'
   , integer
   , javaDef
-  , jump'
   , many
+  , noneOf
+  , oneOf
   , option
   , parens'
   , sepBy
   , sepBy1
+  , skip
+  , skipMany
   , some
   , space
+  , spaces
   , squares'
   , stringLit'
   , symbol'
   , token'
-  , (<?>)
   , (<|>)
   )
 
 -- $setup
 -- >>> import Text.S
-
--- | Skips unnecesary whitespaces and comments
-jump :: Stream s => S s ()
-jump = jump' javaDef
 
 -- | Parser for Java token
 token :: Stream s => S s a -> S s a
@@ -71,11 +71,16 @@ squares = squares' javaDef
 symbol :: Stream s => String -> S s String
 symbol = symbol' javaDef
 
+-- | Skip unnecesary whitespaces, comments, and annotations
+jump :: Stream s => S s ()
+jump = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef, anno]
+
 -- | modifier
 modifier :: Stream s => S s String
 modifier =
   choice $
-    symbol <$> ["protected", "private", "public", "abstract", "static", "final"]
+    symbol
+      <$> ["protected", "private", "public", "abstract", "default", "static", "final"]
 
 -- | type definition keywords
 typedef :: Stream s => S s String
@@ -95,12 +100,12 @@ typ =
   token $
     symbol "void" <|> do
       i <- iden'typ -- type name
-      g <- option mempty generic -- diamond
-      l <- option mempty (some $ symbol "[]") -- ndarry
-      v <- option mempty (symbol "...") -- varargs
+      g <- option mempty generic -- generic <T>
+      l <- option mempty (some $ symbol "[]") -- ndarry []
+      v <- option mempty (symbol "...") -- varargs ...
       pure $ concat [i, g, concat l, v]
 
--- | generic diamond
+-- | generic
 --
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
@@ -119,45 +124,33 @@ generic =
 anno :: Stream s => S s String
 anno = token $ do
   c <- char '@' -- sigil
-  n <- iden'typ -- anno varname
-  o <- -- optional (...)
+  n <- iden'typ -- name of annotation
+  a <- -- optional args (...)
     option
       mempty
-      (parens (many $ anycharBut ')') >>= \p -> pure $ "(" ++ p ++ ")")
-  pure $ c : n ++ o
+      ( parens (many $ stringLit' javaDef <|> some (noneOf ")\""))
+          >>= \p -> pure $ "(" ++ concat p ++ ")"
+      )
+  pure $ c : n ++ a
 
 -- | identifier
 --
 -- >>> ta iden "_c0ffee"
 -- "_c0ffee"
 iden :: Stream s => S s String
-iden = identifier' javaDef <?> "identifier"
+iden = identifier' javaDef
 
--- | identifier with relative path
---
--- >>> ta idenpath "coffee.ethiopia.handrip"
--- "coffee.ethiopia.handrip"
-idenpath :: Stream s => S s String
-idenpath =
-  iden >>= \i ->
-    intercalate "." . (i :) <$> many (symbol "." *> iden)
-
--- | identifier for type/object
+-- | identifier for type
 --
 -- >>> ta iden'typ "int"
 -- "int"
 iden'typ :: Stream s => S s String
-iden'typ = token $ do
-  c <- alpha <|> char '_'
-  o <- many (alphaNum <|> char '_')
-  pure $ c : o
-
--- | identifier for declaration
---
--- >>> ta iden'decl "_c0ffee[][]"
--- "_c0ffee"
-iden'decl :: Stream s => S s String
-iden'decl = iden <* option mempty (some $ symbol "[]")
+iden'typ =
+  choice
+    ( symbol
+        <$> ["boolean", "byte", "char", "short", "int", "long", "float", "double"]
+    ) -- primitive types
+    <|> iden
 
 -- | Definition of Java expression
 data Jexp
@@ -176,7 +169,6 @@ data Jexp
   | New String [Jexp] -- new object
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] Jstmt -- lambda expression
-  | Cond Jexp Jexp Jexp -- ternary expression
   | Prefix String Jexp -- prefix unary operator
   | Postfix String Jexp -- postfix unary operator
   | Infix String Jexp Jexp -- binary infix operator
@@ -186,36 +178,89 @@ data Jexp
 
 instance Pretty Jexp
 
--- | Expressions in Java
+-- | Expression in Java
 jexp :: Stream s => S s Jexp
-jexp = choice [expr'cond, expr'op, factor]
+jexp = expr atom priority
+ where
+  atom = factor <|> parens jexp
+  priority =
+    [ [prefix "-", prefix "+", prefix "!"]
+    , [prefix "++", prefix "--", postfix "++", postfix "--"]
+    , [infix' "*", infix' "/"]
+    , [infix' "+", infix' "-", infix' "%"]
+    ,
+      [ infix' "^"
+      , infix' "&"
+      , infix' "|"
+      , infix' "<<"
+      , infix' ">>"
+      , infix' ">>>"
+      ]
+    ,
+      [ infix' ">"
+      , infix' "<"
+      , infix' ">="
+      , infix' "<="
+      , infix' "=="
+      , infix' "!="
+      , infix' "&&"
+      , infix' "||"
+      ]
+    , [infix' "?", infix' ":"] -- ternary operator as bop
+    ]
+  infix' sym = InfixL $ symbol sym $> Infix sym
+  prefix sym = PrefixU $ symbol sym $> Prefix sym
+  postfix sym = PostfixU $ symbol sym $> Postfix sym
 
--- | Unit expressions with the highest priority
+-- | Expressions with the highest priority
 factor :: Stream s => S s Jexp
-factor = parens e <|> e
+factor = e <|> parens e
  where
   e =
     choice
-      [ expr'chain -- call/this/iden
+      [ expr'iof -- instanceof
       , expr'lam -- lambda
-      , expr'new -- new Object
-      , expr'cast -- (type) expr
-      , expr'iof -- instanceof
-      , expr'arr -- array init {1,2,3}
-      , expr'idx -- num[i][j]
+      --    | expr'call: method()
+      --    | expr'idx: arr[i]
+      --    | expr'iden: identifier
+      --    | expr'new: new object
+      --    | expr'cast: (type) expr
+      --    | expr'this: this
+      --    | expr'str: "string"
+      , expr'chain -- join above with '.' (access op) and ':' (method ref)
+      , expr'arr -- init array: {1,2,3}
       , expr'prim -- primitive
       ]
 
--- | Primitive literals
+-- | primitive
 expr'prim :: Stream s => S s Jexp
-expr'prim = choice [flt, int, chr, str, bool, null]
- where
-  null = symbol "null" $> Null
-  bool = Bool <$> (symbol "true" <|> symbol "false")
-  int = token $ Int <$> integer <* option mempty (symbol "L" <|> symbol "l")
-  flt = token $ Float <$> floatB <* option mempty (symbol "F" <|> symbol "f")
-  chr = token $ Char <$> charLit' javaDef
-  str = token $ Str <$> stringLit' javaDef
+expr'prim = choice [expr'chr, expr'bool, expr'null, expr'flt, expr'int, expr'str]
+
+-- | null
+expr'null :: Stream s => S s Jexp
+expr'null = symbol "null" $> Null
+
+-- | bool
+expr'bool :: Stream s => S s Jexp
+expr'bool = Bool <$> (symbol "true" <|> symbol "false")
+
+-- | int
+expr'int :: Stream s => S s Jexp
+expr'int =
+  token $
+    Int <$> (symbol "0x" *> hexadecimal <|> (integer <* skip (oneOf "Ll")))
+
+-- | float
+expr'flt :: Stream s => S s Jexp
+expr'flt = token $ Float <$> floatB <* skip (oneOf "Ff")
+
+-- | char literal
+expr'chr :: Stream s => S s Jexp
+expr'chr = token $ Char <$> charLit' javaDef
+
+-- | string literalj
+expr'str :: Stream s => S s Jexp
+expr'str = token $ Str <$> stringLit' javaDef
 
 -- | Instanceof expression
 --
@@ -244,7 +289,7 @@ expr'arr = Array <$> args'arr
 -- >>> ta expr'idx "arr[i][0]"
 -- Index (Iden "arr") [Iden "i",Int 0]
 expr'idx :: Stream s => S s Jexp
-expr'idx = token $ expr'chain >>= \i -> Index i <$> some (squares jexp)
+expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 
 -- | Object creation expression
 --
@@ -266,7 +311,7 @@ expr'new =
 -- Lambda in Java consists of expr-statement and block-statement
 expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
-  a <- args'decl True <|> (: []) <$> expr'iden -- (args) or value
+  a <- args'decl True <|> ((: []) <$> expr'iden) -- (args) or value
   _ <- symbol "->"
   Lambda a <$> ((Scope "\\" a <$> block) <|> stmt'expr)
 
@@ -284,7 +329,8 @@ expr'this = This <$ symbol "this"
 -- >>> ta expr'call "valueOf(2)"
 -- Call (Iden "valueOf") [Int 2]
 expr'call :: Stream s => S s Jexp
-expr'call = token $ expr'iden >>= \i -> Call i <$> args'expr
+expr'call =
+  token $ skip generic *> expr'iden >>= \i -> Call i <$> args'expr
 
 -- | Field/method chaining
 --
@@ -297,13 +343,22 @@ expr'call = token $ expr'iden >>= \i -> Call i <$> args'expr
 -- >>> ta expr'chain "this.coffee"
 -- Chain [This,Iden "coffee"]
 expr'chain :: Stream s => S s Jexp
-expr'chain = do
+expr'chain = token $ do
   o <-
     sepBy1
       ( symbol "." -- access field/method
           <|> symbol "::" -- method reference
       )
-      (choice [expr'call, expr'this, expr'iden])
+      ( choice
+          [ expr'call
+          , expr'idx
+          , expr'iden
+          , expr'new
+          , expr'cast
+          , expr'this
+          , expr'str
+          ]
+      )
   if length o == 1 then pure (head o) else pure (Chain o)
 
 -- | Parse L-values from a list of arguments in declaration
@@ -318,10 +373,10 @@ args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   pair = typ *> var
-  var = Iden <$> iden'decl
+  var = Iden <$> (iden <* skip (some (symbol "[]")))
   arg =
-    option mempty anno
-      *> option mempty (symbol "final")
+    skip anno
+      *> skip (symbol "final")
       *> (if optType then pair <|> var else typ *> var)
 
 -- | Parse L-values from a list of 'Jexp' arguments
@@ -337,52 +392,6 @@ args'expr = token $ parens (sepBy (symbol ",") jexp)
 -- [Int 1,Int 2,Int 3]
 args'arr :: Stream s => S s [Jexp]
 args'arr = token $ braces (sepBy (symbol ",") jexp)
-
--- | Ternary expression
---
--- >>> ta expr'cond "(10 > 5) ? 1 : 0"
--- Cond (Infix ">" (Int 10) (Int 5)) (Int 1) (Int 0)
-expr'cond :: Stream s => S s Jexp
-expr'cond = token $ do
-  c <- atom
-  _ <- symbol "?"
-  x <- atom
-  _ <- symbol ":"
-  Cond c x <$> atom
- where
-  atom = choice [parens expr'cond, expr'op, factor]
-
--- | Operator-related expression
---
--- >>> ta expr'op "fn(5) % 2 != 0"
--- Infix "!=" (Infix "%" (Call (Iden "fn") [Int 5]) (Int 2)) (Int 0)
---
--- >>> ta expr'op "(5 > 3) && (8 > 5)"
--- Infix "&&" (Infix ">" (Int 5) (Int 3)) (Infix ">" (Int 8) (Int 5))
-expr'op :: Stream s => S s Jexp
-expr'op = expr atom table
- where
-  atom = choice [factor, parens expr'op, parens expr'cond]
-  table =
-    [ [prefix "-", prefix "+", prefix "!"]
-    , [prefix "++", prefix "--", postfix "++", postfix "--"]
-    , [infix' "*", infix' "/", infix' "%"]
-    , [infix' "+", infix' "-"]
-    , [infix' ">", infix' "<", infix' ">=", infix' "<="]
-    , [infix' "^", infix' "&", infix' "|"]
-    , [infix' "<<", infix' ">>", infix' ">>>"]
-    , [infix' "==", infix' "!="]
-    , [infix' "&&", infix' "||"]
-    ]
-
-infix' :: Stream s => String -> Operator s Jexp
-infix' sym = InfixL $ symbol sym $> Infix sym
-
-prefix :: Stream s => String -> Operator s Jexp
-prefix sym = PrefixU $ symbol sym $> Prefix sym
-
-postfix :: Stream s => String -> Operator s Jexp
-postfix sym = PostfixU $ symbol sym $> Postfix sym
 
 -- | Definition of Java statement
 data Jstmt
@@ -419,21 +428,21 @@ jstmt =
     ( choice
         [ stmt'pkg
         , stmt'import
+        , stmt'enum
         , stmt'scope
         , stmt'abs
-        , stmt'bare
-        , stmt'if
-        , stmt'switch
-        , stmt'try
-        , stmt'for
-        , stmt'while
-        , stmt'sync
-        , stmt'enum
-        , stmt'throw
         , stmt'ret
         , stmt'assign
-        , stmt'flow
         , stmt'expr
+        , stmt'flow
+        , stmt'throw
+        , stmt'if
+        , stmt'for
+        , stmt'while
+        , stmt'switch
+        , stmt'try
+        , stmt'sync
+        , stmt'bare
         ]
     )
 
@@ -443,7 +452,7 @@ jstmts = do
   a <- many $ jstmt >>= \s -> (if need'st s then s <$ symbol ";" else pure s)
   x <- many jstmt
   if
-      | null a -> option mempty (symbol ";") $> x -- single statement
+      | null a -> skip (symbol ";") $> x -- single statement
       | null x -> pure a -- well-formed multiple statement
       | otherwise -> symbol ";" $> a ++ x -- malformed multiple statement
 
@@ -469,7 +478,7 @@ need'st = \case
 
 -- | Common block parser
 block :: Stream s => S s [Jstmt]
-block = braces jstmts <* option mempty (symbol ";")
+block = braces jstmts <* skip (symbol ";")
 
 -- | New scope statment
 --
@@ -492,44 +501,36 @@ block = braces jstmts <* option mempty (symbol ";")
 -- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
-  let g = option mempty generic
-  _ <- option mempty (many anno) -- annotations
-  _ <- option mempty (many modifier) -- modifiers
-  _ <- g -- generic before Name
+  skip (many modifier) -- modifiers
+  skip generic -- generic after mod
   i <-
     choice
-      [ typedef *> g *> iden'typ -- class/interface Name
-      , typ *> g *> iden -- Type Name
-      , iden'typ -- Name
+      [ typedef *> iden'typ -- class/interface iden
+      , typ *> iden -- Type iden
+      , iden'typ -- iden
       ]
-  _ <- g -- generic after Name
+  skip generic -- generic after iden
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
-  _ <- many $ choice [alpha, char ',', space] -- ignore throws/extends
+  skipMany (choice [alphaNum, char ',', space]) -- ignore throws/extends
   Scope i a <$> block
 
 -- | Abstract method statement
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
-  _ <- option mempty (many anno) -- annotations
-  i <-
-    symbol "abstract"
-      *> typ
-      *> option mempty generic
-      *> iden'typ
-      <* option mempty generic -- Type Name
+  skip (choice $ symbol <$> ["abstract", "static", "default"])
+  i <- typ *> iden'typ <* skip generic -- Type Name
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
 
 -- | enum statement
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
-  _ <- option mempty (many anno) -- annotations
-  _ <- option mempty (many modifier) -- modifiers
+  skip (many modifier) -- modifiers
   i <- symbol "enum" *> iden'typ -- enum Name
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> (sepBy (symbol ",") jexp <* option mempty (symbol ";"))
+          e <- Enum <$> (sepBy (symbol ",") jexp <* skip (symbol ";"))
           s <- jstmts
           pure $ e : s
       )
@@ -544,8 +545,8 @@ stmt'block = Scope mempty [] <$> block
 -- | Bare-block statement
 stmt'bare :: Stream s => S s Jstmt
 stmt'bare = do
-  _ <- option mempty (symbol "static")
-  _ <- option mempty (choice $ symbol <$> ["synchronized", "final", "transient"])
+  skip (symbol "static")
+  skip (choice $ symbol <$> ["synchronized", "final", "transient"])
   Scope mempty [] <$> block
 
 -- | Assignment statement
@@ -557,18 +558,13 @@ stmt'bare = do
 -- Assign "=" (Iden "number") (Int 5)
 stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
-  _ <- option mempty (many anno) -- annotations
-  _ <- option mempty (many modifier) -- modifiers
-  ( choice
-      [ expr'iden'decl -- type iden
-      , expr'idx -- iden[i][j]
-      , expr'iden -- iden
-      ]
+  skip (many modifier) -- modifiers
+  ( (expr'iden'decl <|> expr'chain) -- type iden <|> iden
       >>= \i -> choice ops >>= \op -> Assign op i <$> jexp -- op(=,+=,..) jexp
     )
     <|> (expr'iden'decl >>= \i -> pure (Assign mempty i O)) -- type iden;
  where
-  expr'iden'decl = Iden <$> (typ *> iden'decl)
+  expr'iden'decl = Iden <$> (typ *> iden <* skip (some (symbol "[]")))
   ops =
     symbol
       <$> ["=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
@@ -576,9 +572,9 @@ stmt'assign = do
 -- | Return statement
 --
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
--- Return (Cond (Infix ">" (Int 10) (Int 5)) (Int 1) (Int 0))
+-- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = symbol "return" *> (Return <$> jexp)
+stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure O))
 
 -- | Expression statement
 --
@@ -592,18 +588,19 @@ stmt'expr = Expr <$> jexp
 -- >>> ta stmt'pkg "package com.example.math"
 -- Package "com.example.math"
 stmt'pkg :: Stream s => S s Jstmt
-stmt'pkg = Package <$> (symbol "package" *> idenpath)
+stmt'pkg = Package <$> (symbol "package" *> many (alphaNum <|> oneOf ".*_"))
 
 -- | Import statement
 --
 -- >>> ta stmt'import "import java.util.*"
 -- Import "java.util.*"
 stmt'import :: Stream s => S s Jstmt
-stmt'import = do
-  _ <- symbol "import" *> option mempty (symbol "static")
-  i <- idenpath
-  a <- option mempty (symbol ".*")
-  pure $ Import (i ++ a)
+stmt'import =
+  Import
+    <$> ( symbol "import"
+            *> skip (symbol "static")
+            *> many (alphaNum <|> oneOf ".*_")
+        )
 
 -- | Flow control statement
 --
@@ -636,9 +633,7 @@ stmt'if = do
     elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
     Else elif'cond <$> stmt'block -- else if {..}
   else' <-
-    option
-      []
-      ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
+    option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
   pure $ If if'cond if' (elif' ++ else')
 
 -- | switch statement
@@ -649,7 +644,7 @@ stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
   Switch e
-    <$> braces
+    <$> braces -- switch body
       ( some $ do
           v <-
             (symbol "case" *> jexp <* symbol ":") -- case expr:
@@ -666,14 +661,16 @@ stmt'switch = do
 -- Try (Scope "" [] []) [Catch O (Scope "" [] [Expr (Call (Iden "close") [])])]
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
-  try' <- symbol "try" *> stmt'block -- try {..}
+  try' <- do
+    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (with)
+    b <- block -- try {..}
+    pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
-    cond' <- symbol "catch" *> parens (typ *> jexp) -- catch (Exception e)
+    cond' <- -- catch (E1 | E2 e)
+      symbol "catch" *> parens (typ *> skipMany (symbol "|" *> typ) *> expr'iden)
     Catch cond' <$> stmt'block -- catch {..}
-  final' <-
-    option
-      []
-      ((: []) . Catch O <$> (symbol "finally" *> stmt'block)) -- finally {..}
+  final' <- -- finally {..}
+    option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))
   pure $ Try try' (catch' ++ final')
 
 -- | for-statement
@@ -682,12 +679,13 @@ stmt'try = do
 -- For (Scope "" [] [Assign "=" (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 10)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
-  let p = stmt'assign <|> stmt'expr
-  let foreach = sepBy (symbol ":") p -- (int i : ix)
-  let classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
   b <- block -- for {..}
   pure $ For (Scope mempty [] (a ++ b))
+ where
+  p = stmt'assign <|> stmt'expr
+  foreach = sepBy (symbol ":") p -- (int i : ix)
+  classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
 
 -- | while/do-while statement
 --

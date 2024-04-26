@@ -25,24 +25,8 @@ import Data.String.Here
 ff :: String
 ff =
   [here|
-public abstract class CacheRepository<T> {
-
-    abstract String key(T entity);
-
-    abstract Class<T> getCacheClass();
-
-    String value(T entity) {
-        return gson.toJson(entity);
+    protected void encode(ChannelHandlerContext ctx, ControlCommand controlCommand, ByteBuf out) throws Exception {
+        byte[] bytes = jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand);
+        out.writeBytes(bytes);
     }
-
-    abstract LocalDateTime expireAt(T entity);
-
-    public Optional<T> getCacheData(String key) {
-        return get(key)
-        .map(v -> {
-                    log.debug("cache data - key: {}, value: {}", key, v);
-                    return v;
-                }).map(v -> gson.fromJson(v, getCacheClass()));
-    }
-}
 |]
