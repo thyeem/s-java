@@ -32,7 +32,7 @@ library
       Paths_ss
   hs-source-dirs:
       src
-  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -O2 -g0 -fexpose-all-unfoldings
   build-depends:
       base
     , containers
@@ -44,12 +44,9 @@ executable ss
   main-is: Main.hs
   hs-source-dirs:
       app
-  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -O2
   build-depends:
       base
-    , containers
-    , here
-    , s
     , ss
   default-language: Haskell2010
 
@@ -60,13 +57,10 @@ test-suite doctest
       Paths_ss
   hs-source-dirs:
       test
-  ghc-options: -O2 -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       Glob
     , base
-    , containers
     , doctest
-    , here
-    , s
     , ss
   default-language: Haskell2010
