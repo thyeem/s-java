@@ -30,3 +30,6 @@ ff =
         out.writeBytes(bytes);
     }
 |]
+
+fff :: String
+fff = "jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand)"

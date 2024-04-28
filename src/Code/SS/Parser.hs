@@ -344,22 +344,17 @@ expr'call =
 -- Chain [This,Iden "coffee"]
 expr'chain :: Stream s => S s Jexp
 expr'chain = token $ do
-  o <-
-    sepBy1
+  base <-
+    choice [expr'call, expr'idx, expr'iden, expr'new, expr'cast, expr'this, expr'str]
+  ext <-
+    many $
       ( symbol "." -- access field/method
           <|> symbol "::" -- method reference
       )
-      ( choice
-          [ expr'call
-          , expr'idx
-          , expr'iden
-          , expr'new
-          , expr'cast
-          , expr'this
-          , expr'str
-          ]
-      )
-  if length o == 1 then pure (head o) else pure (Chain o)
+        *> ( expr'call -- method call
+              <|> Iden <$> some (alphaNum <|> oneOf "_$") -- identifier
+           )
+  if null ext then pure base else pure $ Chain (base : ext)
 
 -- | Parse L-values from a list of arguments in declaration
 -- If 'optType' is set, bare-type variables are admitted.
