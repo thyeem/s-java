@@ -21,6 +21,7 @@ import Text.S
   , cmtL'
   , expr
   , floatB
+  , gap'
   , hexadecimal
   , identifier'
   , integer
@@ -31,7 +32,6 @@ import Text.S
   , option
   , parens'
   , sepBy
-  , sepBy1
   , skip
   , skipMany
   , some
@@ -47,33 +47,37 @@ import Text.S
 -- $setup
 -- >>> import Text.S
 
+-- | Skip whitespaces, comments, and annotations
+jump :: Stream s => S s ()
+jump = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef, anno]
+
+-- | Ensure being separated by spaces or comments afterwards
+gap :: Stream s => S s ()
+gap = gap' javaDef
+
 -- | Parser for Java token
 token :: Stream s => S s a -> S s a
-token = token' javaDef
-
--- | Parser for < .. >
-angles :: Stream s => S s a -> S s a
-angles = angles' javaDef
-
--- | Parser for ( .. )
-parens :: Stream s => S s a -> S s a
-parens = parens' javaDef
-
--- | Parser for { .. }
-braces :: Stream s => S s a -> S s a
-braces = braces' javaDef
-
--- | Parser for [ .. ]
-squares :: Stream s => S s a -> S s a
-squares = squares' javaDef
+token = token' jump
 
 -- | Parser for given strings
 symbol :: Stream s => String -> S s String
-symbol = symbol' javaDef
+symbol = symbol' jump
 
--- | Skip unnecesary whitespaces, comments, and annotations
-jump :: Stream s => S s ()
-jump = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef, anno]
+-- | Parser for < .. >
+angles :: Stream s => S s a -> S s a
+angles = angles' jump
+
+-- | Parser for ( .. )
+parens :: Stream s => S s a -> S s a
+parens = parens' jump
+
+-- | Parser for { .. }
+braces :: Stream s => S s a -> S s a
+braces = braces' jump
+
+-- | Parser for [ .. ]
+squares :: Stream s => S s a -> S s a
+squares = squares' jump
 
 -- | modifier
 modifier :: Stream s => S s String
@@ -97,22 +101,19 @@ typedef = choice $ symbol <$> ["class", "interface"]
 -- "String..."
 typ :: Stream s => S s String
 typ =
-  token $
-    symbol "void" <|> do
-      i <- iden'typ -- type name
-      g <- option mempty generic -- generic <T>
-      l <- option mempty (some $ symbol "[]") -- ndarry []
-      v <- option mempty (symbol "...") -- varargs ...
-      pure $ concat [i, g, concat l, v]
+  symbol "void" <|> do
+    i <- iden'typ -- type name
+    g <- option mempty generic -- generic <T>
+    l <- option mempty (some $ symbol "[]") -- ndarry []
+    v <- option mempty (symbol "...") -- varargs ...
+    pure $ concat [i, g, concat l, v]
 
 -- | generic
 --
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
 generic :: Stream s => S s String
-generic =
-  token $
-    angles (many $ anycharBut '>') >>= \p -> pure $ "<" ++ p ++ ">"
+generic = angles (many $ anycharBut '>') >>= \p -> pure $ "<" ++ p ++ ">"
 
 -- | annotations
 --
@@ -122,7 +123,7 @@ generic =
 -- >>> ta anno "@SuppressWarnings(bool=false) public"
 -- "@SuppressWarnings(bool=false)"
 anno :: Stream s => S s String
-anno = token $ do
+anno = do
   c <- char '@' -- sigil
   n <- iden'typ -- name of annotation
   a <- -- optional args (...)
@@ -304,7 +305,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 expr'new :: Stream s => S s Jexp
 expr'new =
   token $
-    (symbol "new" *> typ)
+    (symbol "new" *> token typ)
       >>= \t -> New t <$> choice [args'expr, args'arr, some (squares jexp)]
 
 -- | Lambda expression
@@ -330,7 +331,9 @@ expr'this = This <$ symbol "this"
 -- Call (Iden "valueOf") [Int 2]
 expr'call :: Stream s => S s Jexp
 expr'call =
-  token $ skip generic *> expr'iden >>= \i -> Call i <$> args'expr
+  token $
+    skip generic *> (expr'iden <|> Iden <$> symbol "super")
+      >>= \i -> Call i <$> args'expr
 
 -- | Field/method chaining
 --
@@ -369,10 +372,7 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   pair = typ *> var
   var = Iden <$> (iden <* skip (some (symbol "[]")))
-  arg =
-    skip anno
-      *> skip (symbol "final")
-      *> (if optType then pair <|> var else typ *> var)
+  arg = skip (symbol "final") *> (if optType then pair <|> var else pair)
 
 -- | Parse L-values from a list of 'Jexp' arguments
 --
@@ -394,10 +394,11 @@ data Jstmt
   | Import String -- import statement
   | Abstract Jexp [Jexp] -- abstract method statement
   | Scope String [Jexp] [Jstmt] -- new scope
-  | Assign String Jexp Jexp -- assignment/declaration
   | Return Jexp -- return statement
   | Flow String -- flow control statement
   | Expr Jexp -- expression statement
+  | Assign [Jstmt] -- a list of assignments, [Set {}]
+  | Set String Jexp Jexp -- each decl/assign (only valid in assign-statement)
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
   | Switch Jexp [Jstmt] -- switch-statement
@@ -506,7 +507,7 @@ stmt'scope = do
       ]
   skip generic -- generic after iden
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
-  skipMany (choice [alphaNum, char ',', space]) -- ignore throws/extends
+  skipMany (choice [alphaNum, oneOf ",<>()", space]) -- ignore throws/extends
   Scope i a <$> block
 
 -- | Abstract method statement
@@ -547,22 +548,48 @@ stmt'bare = do
 -- | Assignment statement
 --
 -- >>> ta stmt'assign "int number"
--- Assign "" (Iden "number") O
+-- Assign [Set "" (Iden "number") O]
 --
 -- >>> ta stmt'assign "int number = 5"
--- Assign "=" (Iden "number") (Int 5)
+-- Assign [Set "=" (Iden "number") (Int 5)]
 stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
   skip (many modifier) -- modifiers
-  ( (expr'iden'decl <|> expr'chain) -- type iden <|> iden
-      >>= \i -> choice ops >>= \op -> Assign op i <$> jexp -- op(=,+=,..) jexp
+  ( do
+      _ <- typ
+      a <- decl'init
+      o <- many (symbol "," *> decl'init)
+      pure $ Assign (a : o) -- declare & init: type a=jexp [, b=jexp,..]
     )
-    <|> (expr'iden'decl >>= \i -> pure (Assign mempty i O)) -- type iden;
+    <|> ( do
+            _ <- typ
+            a <- decl
+            o <- many (symbol "," *> decl)
+            pure $ Assign (a : o) -- declare: type a [, b,..]
+        )
+    <|> ( expr'chain >>= \i ->
+            symbol "="
+              <|> choice
+                ( symbol
+                    <$> [ "+="
+                        , "-="
+                        , "*="
+                        , "/="
+                        , "%="
+                        , "<<="
+                        , ">>="
+                        , ">>>="
+                        , "&="
+                        , "^="
+                        , "|="
+                        ] -- compound assignment operators
+                )
+              >>= \op -> jexp >>= (\o -> pure $ Assign [o]) . Set op i
+        ) -- assign: a=jexp, a+=jexp, a-=jexp,..
  where
-  expr'iden'decl = Iden <$> (typ *> iden <* skip (some (symbol "[]")))
-  ops =
-    symbol
-      <$> ["=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
+  decl = iden'decl >>= \i -> pure $ Set mempty i O
+  decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
+  iden'decl = Iden <$> (iden <* skip (some (symbol "[]")))
 
 -- | Return statement
 --
@@ -670,8 +697,11 @@ stmt'try = do
 
 -- | for-statement
 --
--- >>> ta stmt'for "for (int i=0;i<10;i++) {}"
--- For (Scope "" [] [Assign "=" (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 10)),Expr (Postfix "++" (Iden "i"))])
+-- >>> ta stmt'for "for (int i: numbers) {}"
+-- For (Scope "" [] [Assign [Set "" (Iden "i") O],Expr (Iden "numbers")])
+--
+-- >>> ta stmt'for "for (int i=0;i<5;i++) {}"
+-- For (Scope "" [] [Assign [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
