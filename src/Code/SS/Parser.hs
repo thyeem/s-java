@@ -38,6 +38,7 @@ import Text.S
   , space
   , spaces
   , squares'
+  , string
   , stringLit'
   , symbol'
   , token'
@@ -83,12 +84,12 @@ squares = squares' jump
 modifier :: Stream s => S s String
 modifier =
   choice $
-    symbol
+    string
       <$> ["protected", "private", "public", "abstract", "default", "static", "final"]
 
 -- | type definition keywords
 typedef :: Stream s => S s String
-typedef = choice $ symbol <$> ["class", "interface"]
+typedef = choice $ string <$> ["class", "interface"]
 
 -- | type
 -- >>> ta typ "int[][] c0ffee"
@@ -101,12 +102,14 @@ typedef = choice $ symbol <$> ["class", "interface"]
 -- "String..."
 typ :: Stream s => S s String
 typ =
-  symbol "void" <|> do
-    i <- iden'typ -- type name
-    g <- option mempty generic -- generic <T>
-    l <- option mempty (some $ symbol "[]") -- ndarry []
-    v <- option mempty (symbol "...") -- varargs ...
-    pure $ concat [i, g, concat l, v]
+  string "void"
+    <|> ( do
+            i <- iden'typ -- type name
+            g <- option mempty generic -- generic <T>
+            l <- option mempty (some $ string "[]") -- ndarry []
+            v <- option mempty (string "...") -- varargs ...
+            pure $ concat [i, g, concat l, v]
+        )
 
 -- | generic
 --
@@ -148,7 +151,7 @@ iden = identifier' javaDef
 iden'typ :: Stream s => S s String
 iden'typ =
   choice
-    ( symbol
+    ( string
         <$> ["boolean", "byte", "char", "short", "int", "long", "float", "double"]
     ) -- primitive types
     <|> iden
@@ -249,7 +252,7 @@ expr'bool = Bool <$> (symbol "true" <|> symbol "false")
 expr'int :: Stream s => S s Jexp
 expr'int =
   token $
-    Int <$> (symbol "0x" *> hexadecimal <|> (integer <* skip (oneOf "Ll")))
+    Int <$> (string "0x" *> hexadecimal <|> (integer <* skip (oneOf "Ll")))
 
 -- | float
 expr'flt :: Stream s => S s Jexp
@@ -270,7 +273,7 @@ expr'str = token $ Str <$> stringLit' javaDef
 expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
   i <- expr'chain
-  _ <- symbol "instanceof"
+  string "instanceof" *> gap
   o <- iden'typ
   pure $ InstOf o i
 
@@ -305,7 +308,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 expr'new :: Stream s => S s Jexp
 expr'new =
   token $
-    (symbol "new" *> token typ)
+    (string "new" *> gap *> token typ)
       >>= \t -> New t <$> choice [args'expr, args'arr, some (squares jexp)]
 
 -- | Lambda expression
@@ -318,7 +321,7 @@ expr'lam = token $ do
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
-expr'iden = Iden <$> iden
+expr'iden = token $ Iden <$> iden
 
 -- | Keyword 'this'
 -- 'this' isn't a 'jexp', but can be thought of as an expression semantically
@@ -370,9 +373,12 @@ expr'chain = token $ do
 args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
-  pair = typ *> var
+  pair = typ *> gap *> var
   var = Iden <$> (iden <* skip (some (symbol "[]")))
-  arg = skip (symbol "final") *> (if optType then pair <|> var else pair)
+  arg =
+    skip (symbol "final")
+      *> (if optType then pair <|> var else pair)
+      <* jump
 
 -- | Parse L-values from a list of 'Jexp' arguments
 --
@@ -497,15 +503,16 @@ block = braces jstmts <* skip (symbol ";")
 -- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
-  skip (many modifier) -- modifiers
+  skip (many $ modifier *> gap) -- modifiers
   skip generic -- generic after mod
   i <-
     choice
-      [ typedef *> iden'typ -- class/interface iden
-      , typ *> iden -- Type iden
+      [ typedef *> gap *> iden'typ -- class/interface iden
+      , typ *> gap *> iden -- Type iden
       , iden'typ -- iden
       ]
   skip generic -- generic after iden
+  jump
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
   skipMany (choice [alphaNum, oneOf ",<>()", space]) -- ignore throws/extends
   Scope i a <$> block
@@ -514,15 +521,17 @@ stmt'scope = do
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice $ symbol <$> ["abstract", "static", "default"])
-  i <- typ *> iden'typ <* skip generic -- Type Name
+  i <- typ *> gap *> iden'typ -- Type Name
+  skip generic
+  jump
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
 
 -- | enum statement
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
-  skip (many modifier) -- modifiers
-  i <- symbol "enum" *> iden'typ -- enum Name
+  skip (many $ modifier *> gap) -- modifiers
+  i <- string "enum" *> gap *> iden'typ -- enum Name
   Scope i []
     <$> braces
       ( do
@@ -554,15 +563,15 @@ stmt'bare = do
 -- Assign [Set "=" (Iden "number") (Int 5)]
 stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
-  skip (many modifier) -- modifiers
+  skip (many $ modifier *> gap) -- modifiers
   ( do
-      _ <- typ
+      typ *> gap
       a <- decl'init
       o <- many (symbol "," *> decl'init)
       pure $ Assign (a : o) -- declare & init: type a=jexp [, b=jexp,..]
     )
     <|> ( do
-            _ <- typ
+            typ *> gap
             a <- decl
             o <- many (symbol "," *> decl)
             pure $ Assign (a : o) -- declare: type a [, b,..]
@@ -589,7 +598,7 @@ stmt'assign = do
  where
   decl = iden'decl >>= \i -> pure $ Set mempty i O
   decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
-  iden'decl = Iden <$> (iden <* skip (some (symbol "[]")))
+  iden'decl = Iden <$> (iden <* skip (some (symbol "[]"))) <* jump
 
 -- | Return statement
 --
@@ -689,7 +698,9 @@ stmt'try = do
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
     cond' <- -- catch (E1 | E2 e)
-      symbol "catch" *> parens (typ *> skipMany (symbol "|" *> typ) *> expr'iden)
+      symbol "catch"
+        *> parens
+          (typ *> gap *> skipMany (symbol "|" *> typ *> gap) *> expr'iden)
     Catch cond' <$> stmt'block -- catch {..}
   final' <- -- finally {..}
     option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))

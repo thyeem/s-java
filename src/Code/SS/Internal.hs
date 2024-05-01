@@ -33,3 +33,6 @@ ff =
 
 fff :: String
 fff = "jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand)"
+
+f :: String
+f = "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
