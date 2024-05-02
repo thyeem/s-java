@@ -19,6 +19,7 @@ import Text.S
   , choice
   , cmtB'
   , cmtL'
+  , cutBy
   , expr
   , floatB
   , gap'
@@ -389,10 +390,10 @@ args'expr = token $ parens (sepBy (symbol ",") jexp)
 
 -- | Parse L-values from array initialization expression
 --
--- >>> ta args'arr "{1,2,3}"
+-- >>> ta args'arr "{1,2,3,}"
 -- [Int 1,Int 2,Int 3]
 args'arr :: Stream s => S s [Jexp]
-args'arr = token $ braces (sepBy (symbol ",") jexp)
+args'arr = token $ braces (cutBy (symbol ",") jexp)
 
 -- | Definition of Java statement
 data Jstmt
@@ -518,6 +519,9 @@ stmt'scope = do
   Scope i a <$> block
 
 -- | Abstract method statement
+--
+-- >>> ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
+-- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice $ symbol <$> ["abstract", "static", "default"])
@@ -528,14 +532,21 @@ stmt'abs = do
   pure $ Abstract (Iden i) a
 
 -- | enum statement
+--
+-- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,}"
+-- Scope "Color" [] [Enum [Iden "RED",Iden "GREEN",Iden "BLUE"]]
+--
+-- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,;}"
+-- Scope "Color" [] [Enum [Iden "RED",Iden "GREEN",Iden "BLUE"]]
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
   skip (many $ modifier *> gap) -- modifiers
   i <- string "enum" *> gap *> iden'typ -- enum Name
+  jump
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> (sepBy (symbol ",") jexp <* skip (symbol ";"))
+          e <- Enum <$> (cutBy (symbol ",") jexp <* skip (symbol ";"))
           s <- jstmts
           pure $ e : s
       )
@@ -598,7 +609,7 @@ stmt'assign = do
  where
   decl = iden'decl >>= \i -> pure $ Set mempty i O
   decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
-  iden'decl = Iden <$> (iden <* skip (some (symbol "[]"))) <* jump
+  iden'decl = Iden <$> (iden <* skip (some (symbol "[]")) <* jump)
 
 -- | Return statement
 --
