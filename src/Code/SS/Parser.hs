@@ -377,7 +377,7 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
   pair = typ *> gap *> var
   var = Iden <$> (iden <* skip (some (symbol "[]")))
   arg =
-    skip (symbol "final")
+    skip (string "final" *> gap)
       *> (if optType then pair <|> var else pair)
       <* jump
 
@@ -524,7 +524,7 @@ stmt'scope = do
 -- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
-  skip (choice $ symbol <$> ["abstract", "static", "default"])
+  skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
   i <- typ *> gap *> iden'typ -- Type Name
   skip generic
   jump
@@ -561,8 +561,8 @@ stmt'block = Scope mempty [] <$> block
 -- | Bare-block statement
 stmt'bare :: Stream s => S s Jstmt
 stmt'bare = do
-  skip (symbol "static")
-  skip (choice $ symbol <$> ["synchronized", "final", "transient"])
+  skip (string "static" *> gap)
+  skip (choice (string <$> ["synchronized", "final", "transient"]) *> gap)
   Scope mempty [] <$> block
 
 -- | Assignment statement
@@ -616,7 +616,7 @@ stmt'assign = do
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure O))
+stmt'ret = string "return" *> gap *> (Return <$> (jexp <|> pure O))
 
 -- | Expression statement
 --
@@ -630,7 +630,7 @@ stmt'expr = Expr <$> jexp
 -- >>> ta stmt'pkg "package com.example.math"
 -- Package "com.example.math"
 stmt'pkg :: Stream s => S s Jstmt
-stmt'pkg = Package <$> (symbol "package" *> many (alphaNum <|> oneOf ".*_"))
+stmt'pkg = Package <$> (string "package" *> gap *> many (alphaNum <|> oneOf ".*_"))
 
 -- | Import statement
 --
@@ -639,8 +639,9 @@ stmt'pkg = Package <$> (symbol "package" *> many (alphaNum <|> oneOf ".*_"))
 stmt'import :: Stream s => S s Jstmt
 stmt'import =
   Import
-    <$> ( symbol "import"
-            *> skip (symbol "static")
+    <$> ( string "import"
+            *> gap
+            *> skip (string "static" *> gap)
             *> many (alphaNum <|> oneOf ".*_")
         )
 
@@ -659,7 +660,7 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 -- >>> ta stmt'throw "throw new IllegalArgumentException(e)"
 -- Throw (New "IllegalArgumentException" [Iden "e"])
 stmt'throw :: Stream s => S s Jstmt
-stmt'throw = Throw <$> (symbol "throw" *> jexp)
+stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 
 -- | if-statement
 --
@@ -667,15 +668,15 @@ stmt'throw = Throw <$> (symbol "throw" *> jexp)
 -- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
-  if'cond <- symbol "if" *> parens jexp -- if (condition)
+  if'cond <- string "if" *> gap *> parens jexp -- if (condition)
   if' <-
     stmt'block
       <|> choice [stmt'ret, stmt'throw, stmt'flow, stmt'expr] -- if {..} or single
   elif' <- many $ do
-    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
+    elif'cond <- string "else if" *> gap *> parens jexp -- else if (condition)
     Else elif'cond <$> stmt'block -- else if {..}
   else' <-
-    option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
+    option [] ((: []) . Else O <$> (string "else" *> gap *> stmt'block)) -- else {..}
   pure $ If if'cond if' (elif' ++ else')
 
 -- | switch statement
@@ -684,13 +685,13 @@ stmt'if = do
 -- Switch (Iden "a") [Case (Int 1) [Flow "break"],Case O [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
-  e <- symbol "switch" *> parens jexp -- switch (expr)
+  e <- string "switch" *> gap *> parens jexp -- switch (expr)
   Switch e
     <$> braces -- switch body
       ( some $ do
           v <-
-            (symbol "case" *> jexp <* symbol ":") -- case expr:
-              <|> (symbol "default" *> symbol ":" $> O) -- default:
+            (string "case" *> gap *> jexp <* symbol ":") -- case expr:
+              <|> (string "default" *> gap *> symbol ":" $> O) -- default:
           Case v <$> jstmts -- case body
       )
 
@@ -704,17 +705,18 @@ stmt'switch = do
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (with)
+    a <- string "try" *> gap *> option [] (parens $ many stmt'assign) -- try (with)
     b <- block -- try {..}
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
     cond' <- -- catch (E1 | E2 e)
-      symbol "catch"
+      string "catch"
+        *> gap
         *> parens
           (typ *> gap *> skipMany (symbol "|" *> typ *> gap) *> expr'iden)
     Catch cond' <$> stmt'block -- catch {..}
   final' <- -- finally {..}
-    option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))
+    option [] ((: []) . Catch O <$> (string "finally" *> gap *> stmt'block))
   pure $ Try try' (catch' ++ final')
 
 -- | for-statement
@@ -726,7 +728,7 @@ stmt'try = do
 -- For (Scope "" [] [Assign [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
-  a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
+  a <- string "for" *> gap *> (parens classic <|> parens foreach) -- for (header)
   b <- block -- for {..}
   pure $ For (Scope mempty [] (a ++ b))
  where
@@ -743,12 +745,12 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  (symbol "while" *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
-    <|> ( symbol "do" *> stmt'block
+  (string "while" *> gap *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
+    <|> ( string "do" *> gap *> stmt'block
             >>= \b ->
-              (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
+              (string "while" *> gap *> parens jexp) >>= \e -> pure $ Do b e
         ) -- do {..} while (cond)
 
 -- | synchronized statement
 stmt'sync :: Stream s => S s Jstmt
-stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> stmt'block
+stmt'sync = string "synchronized" *> gap *> parens jexp >>= \c -> Sync c <$> stmt'block
