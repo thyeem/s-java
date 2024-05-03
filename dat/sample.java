@@ -8,7 +8,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 public class ComputeTransHashSHA2 {
 
-    public static void main(String[] args) throws Exception {
+    // public static void main(String[] args) throws Exception {
         String signatureKey = "56E529FE6C63D60E545F84686096E6AA01D5E18A119F18A130F7CFB3983104216979E95D84C91BDD382AA0875264A63940A2D0AA5548F6023B4C78A9D52C18DA";
         String transId = "60115868980";
         String apiLogin = "5T9cRn9FK";
@@ -26,8 +26,8 @@ public class ComputeTransHashSHA2 {
      * @return
      * @throws Exception
      */
-    public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception
-    {
+    // public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception
+    // {
         // Check if Key is null or empty
         if (signatureKey==null||signatureKey.isEmpty())
             throw new IllegalArgumentException("HMACSHA512: key Parameter cannot be empty.");
@@ -49,7 +49,7 @@ public class ComputeTransHashSHA2 {
             throw new NullPointerException("For Signature Key :["+signatureKey+"] And Text To Hash ["+textToHash+"] the generated HMAC512 Key is null .Please contact Authorize.net for more information");
 
         return hashedValue.toUpperCase();
-    }
+    // }
 
     /**
      * This is the method to Calculate Hmac sha512 for given signature signatureKey  in byte array and text to hash in byte array
@@ -96,4 +96,4 @@ public class ComputeTransHashSHA2 {
         }
         return data;
     }
-}
+// }

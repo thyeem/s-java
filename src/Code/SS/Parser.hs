@@ -23,6 +23,7 @@ import Text.S
   , expr
   , floatB
   , gap'
+  , hexDigit
   , hexadecimal
   , identifier'
   , integer
@@ -164,7 +165,7 @@ data Jexp
   | Bool String -- primitive true/false
   | Int Integer -- primitive integer
   | Float Double -- primitive float
-  | Char Char -- char literal
+  | Char String -- char literal
   | Str String -- string literal
   | Iden String -- identifier
   | Chain [Jexp] -- field/method/reference chain
@@ -262,9 +263,17 @@ expr'flt = token $ Float <$> floatB <* skip (oneOf "Ff")
 
 -- | char literal
 expr'chr :: Stream s => S s Jexp
-expr'chr = token $ Char <$> charLit' javaDef
+expr'chr =
+  token $
+    (Char . (: []) <$> charLit' javaDef) -- Java ASCII char literal
+      <|> ( Char
+              <$> between
+                (string "'")
+                (string "'")
+                (string "\\u" >>= \u -> (u ++) <$> some hexDigit)
+          ) -- Java BMP Unicode escape sequence
 
--- | string literalj
+-- | string literal
 expr'str :: Stream s => S s Jexp
 expr'str = token $ Str <$> stringLit' javaDef
 
