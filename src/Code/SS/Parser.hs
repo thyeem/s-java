@@ -675,14 +675,16 @@ stmt'switch = do
     braces
       ( some $ do
           v <-
-            ( string "case" *> gap *> sepBy1 (symbol ",") match <* to
+            ( string "case"
+                *> gap
+                *> sepBy1 (symbol ",") (expr'prim <|> expr'chain)
+                <* to
               ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [O]) -- default:
           Case v <$> jstmts -- case body
       ) -- switch body
   pure $ Switch e b
  where
-  match = expr'prim <|> expr'chain
   to = symbol ":" <|> symbol "->" -- Java 12+
 
 -- | try-catch statement
