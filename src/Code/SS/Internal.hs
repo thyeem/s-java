@@ -38,13 +38,14 @@ f :: String
 f =
   [here|
 switch (day) {
-//    case MONDAY, FRIDAY, SUNDAY:
-//        System.out.println("End of the week!");
-//        break;
+    case MONDAY, FRIDAY, SUNDAY:
+        System.out.println("End of the week!");
+        break;
 
-//    case 'A':
-//        System.out.println("Second day of the week!");
-//        break;
+    case 'A':
+        System.out.println("Second day of the week!");
+        break;
+
     default:
         System.out.println("Midweek");
         break;

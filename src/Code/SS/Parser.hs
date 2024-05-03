@@ -601,7 +601,7 @@ stmt'assign = do
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = string "return" *> gap *> (Return <$> (jexp <|> pure O))
+stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure O))
 
 -- | Expression statement
 --
@@ -667,23 +667,22 @@ stmt'if = do
 -- | switch statement
 --
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
--- Switch (Iden "a") [Case (Int 1) [Flow "break"],Case O [Expr (Int 2)]]
+-- Switch (Iden "a") [Case [Int 1] [Flow "break"],Case [O] [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
-  Switch e
-    <$> braces -- switch body
+  b <-
+    braces
       ( some $ do
           v <-
-            ( string "case"
-                *> gap
-                *> sepBy1 (symbol ",") jexp
-                <* to -- case expr [,expr]:
-              )
+            ( string "case" *> gap *> sepBy1 (symbol ",") match <* to
+              ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [O]) -- default:
           Case v <$> jstmts -- case body
-      )
+      ) -- switch body
+  pure $ Switch e b
  where
+  match = expr'prim <|> expr'chain
   to = symbol ":" <|> symbol "->" -- Java 12+
 
 -- | try-catch statement
