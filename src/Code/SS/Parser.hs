@@ -580,19 +580,9 @@ stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
   skip (many $ modifier *> gap) -- modifiers
   ( do
+      -- declare & init: type a, b=jexp,..
       typ *> gap
-      -- declare & init: type a=jexp [, b=jexp,..]
-      do Assign <$> sepBy1 (symbol ",") decl'init
-        <|> ( do
-                -- declare & init the last only: type a, b [,c,..] = jexp
-                a <- sepBy1 (symbol ",") iden'decl
-                op <- symbol "="
-                e <- jexp
-                pure $ Assign ((($ O) . Set op <$> init a) ++ [Set op (last a) e])
-            )
-        <|>
-        -- declare: type a [, b,..]
-        Assign <$> sepBy1 (symbol ",") decl
+      Assign <$> sepBy1 (symbol ",") (decl'init <|> decl)
     )
     <|> ( expr'chain >>= \i ->
             (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
