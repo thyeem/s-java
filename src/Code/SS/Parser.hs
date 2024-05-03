@@ -690,7 +690,7 @@ stmt'switch = do
     <$> braces -- switch body
       ( some $ do
           v <-
-            (string "case" *> gap *> jexp <* symbol ":") -- case expr:
+            (string "case" *> gap *> jexp <* symbol ":") -- case expr [,expr]:
               <|> (string "default" *> gap *> symbol ":" $> O) -- default:
           Case v <$> jstmts -- case body
       )
