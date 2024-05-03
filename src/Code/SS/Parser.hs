@@ -574,20 +574,19 @@ stmt'bare = do
 -- >>> ta stmt'assign "int number = 5"
 -- Assign [Set "=" (Iden "number") (Int 5)]
 --
--- >>> ta stmt'assign "int a, b = 5"
--- Assign [Set "=" (Iden "a") O,Set "=" (Iden "b") (Int 5)]
+-- >>> ta stmt'assign "int a, b=5"
+-- Assign [Set "" (Iden "a") O,Set "=" (Iden "b") (Int 5)]
 stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
   skip (many $ modifier *> gap) -- modifiers
-  ( do
-      -- declare & init: type a, b=jexp,..
-      typ *> gap
-      Assign <$> sepBy1 (symbol ",") (decl'init <|> decl)
-    )
+  ( typ
+      *> gap
+      *> (Assign <$> sepBy1 (symbol ",") (decl'init <|> decl))
+    ) -- declare/init: type a, b=jexp,...
     <|> ( expr'chain >>= \i ->
             (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
               >>= \op -> jexp >>= (\o -> pure $ Assign [o]) . Set op i
-        ) -- assign: a=jexp, a+=jexp, a-=jexp,..
+        ) -- assign: a=jexp; a+=jexp; a-=jexp; ...
  where
   decl = iden'decl >>= \i -> pure $ Set mempty i O
   decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
