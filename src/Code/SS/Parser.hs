@@ -33,6 +33,7 @@ import Text.S
   , option
   , parens'
   , sepBy
+  , sepBy1
   , skip
   , skipMany
   , some
@@ -409,7 +410,7 @@ data Jstmt
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
   | Switch Jexp [Jstmt] -- switch-statement
-  | Case Jexp [Jstmt] -- case clause (only valid in switch-statement)
+  | Case [Jexp] [Jstmt] -- case clause (only valid in switch-statement)
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in try-statement)
   | For Jstmt -- for-statement
@@ -576,40 +577,24 @@ stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
   skip (many $ modifier *> gap) -- modifiers
   ( do
+      -- declare & init: type a=jexp [, b=jexp,..]
       typ *> gap
-      a <- decl'init
-      o <- many (symbol "," *> decl'init)
-      pure $ Assign (a : o) -- declare & init: type a=jexp [, b=jexp,..]
+      Assign <$> sepBy1 (symbol ",") decl'init
     )
     <|> ( do
+            -- declare: type a [, b,..]
             typ *> gap
-            a <- decl
-            o <- many (symbol "," *> decl)
-            pure $ Assign (a : o) -- declare: type a [, b,..]
+            Assign <$> sepBy1 (symbol ",") decl
         )
     <|> ( expr'chain >>= \i ->
-            symbol "="
-              <|> choice
-                ( symbol
-                    <$> [ "+="
-                        , "-="
-                        , "*="
-                        , "/="
-                        , "%="
-                        , "<<="
-                        , ">>="
-                        , ">>>="
-                        , "&="
-                        , "^="
-                        , "|="
-                        ] -- compound assignment operators
-                )
+            (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
               >>= \op -> jexp >>= (\o -> pure $ Assign [o]) . Set op i
         ) -- assign: a=jexp, a+=jexp, a-=jexp,..
  where
   decl = iden'decl >>= \i -> pure $ Set mempty i O
   decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
   iden'decl = Iden <$> (iden <* skip (some (symbol "[]")) <* jump)
+  ops = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
 
 -- | Return statement
 --
@@ -685,15 +670,21 @@ stmt'if = do
 -- Switch (Iden "a") [Case (Int 1) [Flow "break"],Case O [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
-  e <- string "switch" *> gap *> parens jexp -- switch (expr)
+  e <- symbol "switch" *> parens jexp -- switch (expr)
   Switch e
     <$> braces -- switch body
       ( some $ do
           v <-
-            (string "case" *> gap *> jexp <* symbol ":") -- case expr [,expr]:
-              <|> (string "default" *> gap *> symbol ":" $> O) -- default:
+            ( string "case"
+                *> gap
+                *> sepBy1 (symbol ",") jexp
+                <* for
+              ) -- case expr [,expr]:
+              <|> (symbol "default" *> for $> [O]) -- default:
           Case v <$> jstmts -- case body
       )
+ where
+  for = symbol ":" <|> symbol "->" -- Java 12+
 
 -- | try-catch statement
 --
@@ -705,18 +696,17 @@ stmt'switch = do
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- string "try" *> gap *> option [] (parens $ many stmt'assign) -- try (with)
+    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (with)
     b <- block -- try {..}
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
     cond' <- -- catch (E1 | E2 e)
-      string "catch"
-        *> gap
+      symbol "catch"
         *> parens
           (typ *> gap *> skipMany (symbol "|" *> typ *> gap) *> expr'iden)
     Catch cond' <$> stmt'block -- catch {..}
   final' <- -- finally {..}
-    option [] ((: []) . Catch O <$> (string "finally" *> gap *> stmt'block))
+    option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))
   pure $ Try try' (catch' ++ final')
 
 -- | for-statement
@@ -728,7 +718,7 @@ stmt'try = do
 -- For (Scope "" [] [Assign [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
-  a <- string "for" *> gap *> (parens classic <|> parens foreach) -- for (header)
+  a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
   b <- block -- for {..}
   pure $ For (Scope mempty [] (a ++ b))
  where
@@ -745,12 +735,12 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  (string "while" *> gap *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
-    <|> ( string "do" *> gap *> stmt'block
+  (symbol "while" *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
+    <|> ( symbol "do" *> stmt'block
             >>= \b ->
-              (string "while" *> gap *> parens jexp) >>= \e -> pure $ Do b e
+              (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
         ) -- do {..} while (cond)
 
 -- | synchronized statement
 stmt'sync :: Stream s => S s Jstmt
-stmt'sync = string "synchronized" *> gap *> parens jexp >>= \c -> Sync c <$> stmt'block
+stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> stmt'block

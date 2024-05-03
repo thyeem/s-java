@@ -35,4 +35,11 @@ fff :: String
 fff = "jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand)"
 
 f :: String
-f = "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
+f =
+  [here|
+    switch (input) {
+    case 'A', 'B', 'C' -> System.out.println("Letters A, B, or C");
+    case 'D' -> System.out.println("Letter D");
+    default -> System.out.println("Other letter");
+}
+|]
