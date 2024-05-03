@@ -678,13 +678,13 @@ stmt'switch = do
             ( string "case"
                 *> gap
                 *> sepBy1 (symbol ",") jexp
-                <* for
-              ) -- case expr [,expr]:
-              <|> (symbol "default" *> for $> [O]) -- default:
+                <* to -- case expr [,expr]:
+              )
+              <|> (symbol "default" *> to $> [O]) -- default:
           Case v <$> jstmts -- case body
       )
  where
-  for = symbol ":" <|> symbol "->" -- Java 12+
+  to = symbol ":" <|> symbol "->" -- Java 12+
 
 -- | try-catch statement
 --
@@ -693,10 +693,13 @@ stmt'switch = do
 --
 -- >>> ta stmt'try "try {} finally {close();}"
 -- Try (Scope "" [] []) [Catch O (Scope "" [] [Expr (Call (Iden "close") [])])]
+--
+-- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
+-- Try (Scope "" [] [Assign [Set "=" (Iden "b") (New "Buffer" [])]]) []
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (with)
+    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (src)
     b <- block -- try {..}
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
