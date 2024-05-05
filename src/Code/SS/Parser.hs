@@ -309,7 +309,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 -- | Object creation expression
 --
 -- >>> ta expr'new "new Object(\"obj\", 'Q', 12.34)"
--- New "Object" [Str "obj",Char 'Q',Float 12.34]
+-- New "Object" [Str "obj",Char "Q",Float 12.34]
 --
 -- >>> ta expr'new "new int[]{1, 2, 3}"
 -- New "int[]" [Int 1,Int 2,Int 3]
@@ -659,15 +659,15 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
-  if'cond <- string "if" *> gap *> parens jexp -- if (condition)
+  if'cond <- symbol "if" *> parens jexp -- if (condition)
   if' <-
     stmt'block
       <|> choice [stmt'ret, stmt'throw, stmt'flow, stmt'expr] -- if {..} or single
   elif' <- many $ do
-    elif'cond <- string "else if" *> gap *> parens jexp -- else if (condition)
+    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
     Else elif'cond <$> stmt'block -- else if {..}
   else' <-
-    option [] ((: []) . Else O <$> (string "else" *> gap *> stmt'block)) -- else {..}
+    option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
   pure $ If if'cond if' (elif' ++ else')
 
 -- | switch statement

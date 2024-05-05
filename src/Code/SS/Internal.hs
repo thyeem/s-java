@@ -32,7 +32,11 @@ ff =
 |]
 
 fff :: String
-fff = "jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand)"
+fff =
+  [here|
+    if(hashedValue==null) 3;
+//       throw new NullPointerException("For Signature Key :["+signatureKey+"] And Text To Hash ["+textToHash+"] the generated HMAC512 Key is null .Please contact Authorize.net for more information");
+|]
 
 f :: String
 f =
