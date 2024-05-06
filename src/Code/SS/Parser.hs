@@ -180,13 +180,12 @@ data Jexp
   | Index Jexp [Jexp] -- array access
   | InstOf String Jexp -- instanceOf
   | Cast String Jexp -- type casting
-  | New String [Jexp] -- new object
+  | New String [Jexp] Jstmt -- new object
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] Jstmt -- lambda expression
   | Prefix String Jexp -- prefix unary operator
   | Postfix String Jexp -- postfix unary operator
   | Infix String Jexp Jexp -- binary infix operator
-  | This -- 'this' special keyword
   | O -- nil expression
   deriving (Show)
 
@@ -239,7 +238,6 @@ factor = e <|> parens e
       --    | expr'iden: identifier
       --    | expr'new: new object
       --    | expr'cast: (type) expr
-      --    | expr'this: this
       --    | expr'str: "string"
       , expr'chain -- join above with '.' (access op) and ':' (method ref)
       , expr'arr -- init array: {1,2,3}
@@ -324,10 +322,11 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 -- >>> ta expr'new "new byte[len / 2]"
 -- New "byte" [Infix "/" (Iden "len") (Int 2)]
 expr'new :: Stream s => S s Jexp
-expr'new =
-  token $
-    (string "new" *> gap *> typ)
-      >>= \t -> New t <$> choice [args'expr, args'arr, some (squares jexp)]
+expr'new = token $ do
+  t <- string "new" *> gap *> typ
+  a <- choice [args'expr, args'arr, some (squares jexp)]
+  b <- option mempty block -- with anonymous inner class/init-blocks
+  pure $ New t a (Scope t [] b)
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
@@ -339,12 +338,7 @@ expr'lam = token $ do
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
-expr'iden = token $ Iden <$> iden
-
--- | Keyword 'this'
--- 'this' isn't a 'jexp', but can be thought of as an expression semantically
-expr'this :: Stream s => S s Jexp
-expr'this = This <$ symbol "this"
+expr'iden = token $ Iden <$> choice [iden, symbol "this", symbol "super"]
 
 -- | Method invocation expression
 --
@@ -353,8 +347,7 @@ expr'this = This <$ symbol "this"
 expr'call :: Stream s => S s Jexp
 expr'call =
   token $
-    skip generic *> jump *> (expr'iden <|> Iden <$> symbol "super")
-      >>= \i -> Call i <$> args'expr
+    skip generic *> jump *> expr'iden >>= \i -> Call i <$> args'expr
 
 -- | Field/method chaining
 --
@@ -365,11 +358,11 @@ expr'call =
 -- Iden "coffee"
 --
 -- >>> ta expr'chain "this.coffee"
--- Chain [This,Iden "coffee"]
+-- Chain [Iden "this",Iden "coffee"]
 expr'chain :: Stream s => S s Jexp
 expr'chain = token $ do
   base <-
-    choice [expr'call, expr'idx, expr'iden, expr'new, expr'cast, expr'this, expr'str]
+    choice [expr'call, expr'idx, expr'iden, expr'new, expr'cast, expr'str]
   ext <-
     many $
       ( symbol "." -- access field/method
@@ -417,12 +410,13 @@ data Jstmt
   = Package String -- package statement
   | Import String -- import statement
   | Abstract Jexp [Jexp] -- abstract method statement
-  | Scope String [Jexp] [Jstmt] -- new scope
-  | Return Jexp -- return statement
-  | Flow String -- flow control statement
-  | Expr Jexp -- expression statement
   | Assign [Jstmt] -- a list of assignments, [Set {}]
   | Set String Jexp Jexp -- each decl/assign (only valid in assign-statement)
+  | Return Jexp -- return statement
+  | Throw Jexp -- throw statement
+  | Flow String -- flow control statement
+  | Expr Jexp -- expression statement
+  | Scope String [Jexp] [Jstmt] -- new scope
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
   | For Jstmt -- for-statement
@@ -433,7 +427,6 @@ data Jstmt
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in try-statement)
   | Enum [Jexp] -- enum declaration statement
-  | Throw Jexp -- throw statement
   | Sync Jexp Jstmt -- synchronized statement
   deriving (Show)
 

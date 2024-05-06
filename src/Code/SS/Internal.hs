@@ -25,37 +25,43 @@ import Data.String.Here
 ff :: String
 ff =
   [here|
-    protected void encode(ChannelHandlerContext ctx, ControlCommand controlCommand, ByteBuf out) throws Exception {
-        byte[] bytes = jsonMapper.writerFor(ControlCommand.class).writeValueAsBytes(controlCommand);
-        out.writeBytes(bytes);
-    }
-|]
+//    protected JButton createToolbarButton(String key) {
+//        URL url = getResource(key + imageSuffix);
+//
+        JButton b = new JButton(new ImageIcon(url)) {
 
-fff :: String
-fff =
-  [here|
-    if(hashedValue==null) 3;
-//       throw new NullPointerException("For Signature Key :["+signatureKey+"] And Text To Hash ["+textToHash+"] the generated HMAC512 Key is null .Please contact Authorize.net for more information");
-|]
+            @Override
+            public float getAlignmentY() {
+                return 0.5f;
+            }
+        };
 
-f :: String
-f =
-  [here|
-import java.util.Arrays;
-import java.util.List;
+//        b.setRequestFocusEnabled(false);
 
-public class LambdaExample {
-    public static void main(String[] args) {
-        List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
 
-        // Using lambda with a single statement (without braces)
-        numbers.forEach(n -> System.out.println(n));
+        francis;
 
-        // Alternatively, the same lambda with braces (for multiple statements or clarity)
-        numbers.forEach(n -> {
-            System.out.println(n);
-            // Add more statements here if needed
-        });
-    }
-}
+        b.setMargin();
+//
+//        b.setMargin(new Insets(1, 1, 1, 1));
+//
+//        String astr = getProperty(key + actionSuffix);
+//        if (astr == null) {
+//            astr = key;
+//        }
+//        Action a = getAction(astr);
+//        if (a != null) {
+//            b.setActionCommand(astr);
+//            b.addActionListener(a);
+//        } else {
+//            b.setEnabled(false);
+//        }
+//
+//        String tip = getResourceString(key + tipSuffix);
+//        if (tip != null) {
+//            b.setToolTipText(tip);
+//        }
+//
+//        return b;
+//    }
 |]
