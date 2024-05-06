@@ -500,6 +500,21 @@ need'st = \case
 block :: Stream s => S s [Jstmt]
 block = braces jstmts <* skip (symbol ";")
 
+-- | Parse block statement into a new scope
+--
+-- These are not braces-block that do not actually define a new scope.
+-- But they has their-own var scopes, so this should be taken into account.
+--
+-- 1. control-statement(if, swith, while, for, ..)
+-- 1. try-catch
+-- 1. static/synchronized block
+-- 1. bare block
+--
+-- >>> ta block'scope "{ coffee.roasted(); }"
+-- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
+block'scope :: Stream s => S s Jstmt
+block'scope = Scope mempty [] <$> block
+
 -- | New scope statment
 --
 -- >>> ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
@@ -568,13 +583,6 @@ stmt'enum = do
           s <- jstmts
           pure $ e : s
       )
-
--- | Unnamed block statement
---
--- >>> ta stmt'block "{ coffee.roasted(); }"
--- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
-stmt'block :: Stream s => S s Jstmt
-stmt'block = Scope mempty [] <$> block
 
 -- | Bare-block statement
 stmt'bare :: Stream s => S s Jstmt
@@ -659,22 +667,31 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 stmt'throw :: Stream s => S s Jstmt
 stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 
--- | if-statement
+-- | try-catch statement
 --
--- >>> ta stmt'if "if (a > b) {} else {}"
--- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
-stmt'if :: Stream s => S s Jstmt
-stmt'if = do
-  if'cond <- symbol "if" *> parens jexp -- if (condition)
-  if' <-
-    stmt'block
-      <|> choice [stmt'ret, stmt'throw, stmt'flow, stmt'expr] -- if {..} or single
-  elif' <- many $ do
-    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
-    Else elif'cond <$> stmt'block -- else if {..}
-  else' <-
-    option [] ((: []) . Else O <$> (symbol "else" *> stmt'block)) -- else {..}
-  pure $ If if'cond if' (elif' ++ else')
+-- >>> ta stmt'try "try {} catch (Except e) {}"
+-- Try (Scope "" [] []) [Catch (Iden "e") (Scope "" [] [])]
+--
+-- >>> ta stmt'try "try {} finally {close();}"
+-- Try (Scope "" [] []) [Catch O (Scope "" [] [Expr (Call (Iden "close") [])])]
+--
+-- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
+-- Try (Scope "" [] [Assign [Set "=" (Iden "b") (New "Buffer" [])]]) []
+stmt'try :: Stream s => S s Jstmt
+stmt'try = do
+  try' <- do
+    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (src)
+    b <- block -- try {..}
+    pure $ Scope mempty [] (a ++ b)
+  catch' <- many $ do
+    cond' <- -- catch (E1 | E2 e)
+      symbol "catch"
+        *> parens
+          (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
+    Catch cond' <$> block'scope -- catch {..}
+  final' <- -- finally {..}
+    option [] ((: []) . Catch O <$> (symbol "finally" *> block'scope))
+  pure $ Try try' (catch' ++ final')
 
 -- | switch statement
 --
@@ -699,31 +716,20 @@ stmt'switch = do
  where
   to = symbol ":" <|> symbol "->" -- Java 12+
 
--- | try-catch statement
+-- | if-statement
 --
--- >>> ta stmt'try "try {} catch (Except e) {}"
--- Try (Scope "" [] []) [Catch (Iden "e") (Scope "" [] [])]
---
--- >>> ta stmt'try "try {} finally {close();}"
--- Try (Scope "" [] []) [Catch O (Scope "" [] [Expr (Call (Iden "close") [])])]
---
--- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Scope "" [] [Assign [Set "=" (Iden "b") (New "Buffer" [])]]) []
-stmt'try :: Stream s => S s Jstmt
-stmt'try = do
-  try' <- do
-    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (src)
-    b <- block -- try {..}
-    pure $ Scope mempty [] (a ++ b)
-  catch' <- many $ do
-    cond' <- -- catch (E1 | E2 e)
-      symbol "catch"
-        *> parens
-          (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
-    Catch cond' <$> stmt'block -- catch {..}
-  final' <- -- finally {..}
-    option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))
-  pure $ Try try' (catch' ++ final')
+-- >>> ta stmt'if "if (a > b) {} else {}"
+-- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
+stmt'if :: Stream s => S s Jstmt
+stmt'if = do
+  if'cond <- symbol "if" *> parens jexp -- if (condition)
+  if' <- block'scope <|> jstmt -- if {..} or single
+  elif' <- many $ do
+    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
+    Else elif'cond <$> block'scope -- else if {..}
+  else' <-
+    option [] ((: []) . Else O <$> (symbol "else" *> block'scope)) -- else {..}
+  pure $ If if'cond if' (elif' ++ else')
 
 -- | for-statement
 --
@@ -751,12 +757,12 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  (symbol "while" *> parens jexp >>= \c -> While c <$> stmt'block) -- while (cond) {..}
-    <|> ( symbol "do" *> stmt'block
+  (symbol "while" *> parens jexp >>= \c -> While c <$> block'scope) -- while (cond) {..}
+    <|> ( symbol "do" *> block'scope
             >>= \b ->
               (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
         ) -- do {..} while (cond)
 
 -- | synchronized statement
 stmt'sync :: Stream s => S s Jstmt
-stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> stmt'block
+stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> block'scope
