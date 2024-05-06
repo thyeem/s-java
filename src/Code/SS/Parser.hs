@@ -425,13 +425,13 @@ data Jstmt
   | Set String Jexp Jexp -- each decl/assign (only valid in assign-statement)
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
+  | For Jstmt -- for-statement
+  | While Jexp Jstmt -- while-statement
+  | Do Jstmt Jexp -- do-while-statement
   | Switch Jexp [Jstmt] -- switch-statement
   | Case [Jexp] [Jstmt] -- case clause (only valid in switch-statement)
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in try-statement)
-  | For Jstmt -- for-statement
-  | While Jexp Jstmt -- while-statement
-  | Do Jstmt Jexp -- do-while-statement
   | Enum [Jexp] -- enum declaration statement
   | Throw Jexp -- throw statement
   | Sync Jexp Jstmt -- synchronized statement
@@ -469,16 +469,16 @@ jstmt =
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
 jstmts = do
-  a <- many $ jstmt >>= \s -> (if need'st s then s <$ symbol ";" else pure s)
+  a <- many $ jstmt >>= \s -> (if semi'p s then s <$ symbol ";" else pure s)
   x <- many jstmt
   if
       | null a -> skip (symbol ";") $> x -- single statement
       | null x -> pure a -- well-formed multiple statement
       | otherwise -> symbol ";" $> a ++ x -- malformed multiple statement
 
--- | Check if the ST (statement terminator or ';') is needed
-need'st :: Jstmt -> Bool
-need'st = \case
+-- | Check if the ST (statement terminator or semicolon ';') is required
+semi'p :: Jstmt -> Bool
+semi'p = \case
   Package {} -> True
   Import {} -> True
   Abstract {} -> True
@@ -500,22 +500,23 @@ need'st = \case
 block :: Stream s => S s [Jstmt]
 block = braces jstmts <* skip (symbol ";")
 
--- | Parse block statement into a new scope
+-- | Parse either a scoped brace block or Java's single statement
 --
--- These are not braces-block that do not actually define a new scope.
--- But they has their-own var scopes, so this should be taken into account.
+-- Here the braced block is not a class/method block, but rather a block that
+-- does not actually define a new scope.
 --
 -- 1. control-statement(if, swith, while, for, ..)
 -- 1. try-catch
 -- 1. static/synchronized block
 -- 1. bare block
+-- These block have their own var-scopes, so this should be taken into account.
 --
--- >>> ta block'scope "{ coffee.roasted(); }"
+-- >>> ta block'or'single "{ coffee.roasted(); }"
 -- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
-block'scope :: Stream s => S s Jstmt
-block'scope = Scope mempty [] <$> block
+block'or'single :: Stream s => S s Jstmt
+block'or'single = (Scope mempty [] <$> block) <|> (jstmt <* symbol ";")
 
--- | New scope statment
+-- | New scope statment (class or method)
 --
 -- >>> ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
 -- Scope "hexStringToByteArray" [Iden "str"] []
@@ -681,16 +682,16 @@ stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
     a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (src)
-    b <- block -- try {..}
+    b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
     cond' <- -- catch (E1 | E2 e)
       symbol "catch"
         *> parens
           (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
-    Catch cond' <$> block'scope -- catch {..}
+    Catch cond' <$> block'or'single -- catch {..}
   final' <- -- finally {..}
-    option [] ((: []) . Catch O <$> (symbol "finally" *> block'scope))
+    option [] ((: []) . Catch O <$> (symbol "finally" *> block'or'single))
   pure $ Try try' (catch' ++ final')
 
 -- | switch statement
@@ -723,12 +724,12 @@ stmt'switch = do
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
   if'cond <- symbol "if" *> parens jexp -- if (condition)
-  if' <- block'scope <|> jstmt -- if {..} or single
+  if' <- block'or'single -- {..} or j-stmt;
   elif' <- many $ do
     elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
-    Else elif'cond <$> block'scope -- else if {..}
+    Else elif'cond <$> block'or'single -- {..} or j-stmt;
   else' <-
-    option [] ((: []) . Else O <$> (symbol "else" *> block'scope)) -- else {..}
+    option [] ((: []) . Else O <$> (symbol "else" *> block'or'single)) -- else
   pure $ If if'cond if' (elif' ++ else')
 
 -- | for-statement
@@ -741,7 +742,7 @@ stmt'if = do
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
-  b <- block -- for {..}
+  b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
   pure $ For (Scope mempty [] (a ++ b))
  where
   p = stmt'assign <|> stmt'expr
@@ -757,12 +758,13 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  (symbol "while" *> parens jexp >>= \c -> While c <$> block'scope) -- while (cond) {..}
-    <|> ( symbol "do" *> block'scope
-            >>= \b ->
-              (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
-        ) -- do {..} while (cond)
+  ( symbol "while" *> parens jexp >>= \c ->
+      While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
+  )
+    <|> ( symbol "do" *> block'or'single >>= \b ->
+            (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
+        ) -- do ({..} or j-stmt;) while (cond)
 
 -- | synchronized statement
 stmt'sync :: Stream s => S s Jstmt
-stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> block'scope
+stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> block'or'single
