@@ -41,17 +41,21 @@ fff =
 f :: String
 f =
   [here|
-switch (day) {
-    case MONDAY, FRIDAY, SUNDAY:
-        System.out.println("End of the week!");
-        break;
+import java.util.Arrays;
+import java.util.List;
 
-    case 'A':
-        System.out.println("Second day of the week!");
-        break;
+public class LambdaExample {
+    public static void main(String[] args) {
+        List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
 
-    default:
-        System.out.println("Midweek");
-        break;
+        // Using lambda with a single statement (without braces)
+        numbers.forEach(n -> System.out.println(n));
+
+        // Alternatively, the same lambda with braces (for multiple statements or clarity)
+        numbers.forEach(n -> {
+            System.out.println(n);
+            // Add more statements here if needed
+        });
+    }
 }
 |]

@@ -10,7 +10,6 @@ import Text.S
   , S (..)
   , Stream
   , alphaNum
-  , angles'
   , anycharBut
   , between
   , braces'
@@ -67,10 +66,6 @@ token = token' jump
 symbol :: Stream s => String -> S s String
 symbol = symbol' jump
 
--- | Parser for < .. >
-angles :: Stream s => S s a -> S s a
-angles = angles' jump
-
 -- | Parser for ( .. )
 parens :: Stream s => S s a -> S s a
 parens = parens' jump
@@ -108,18 +103,30 @@ typ =
   string "void"
     <|> ( do
             i <- iden'typ -- type name
-            g <- option mempty generic -- generic <T>
-            l <- option mempty (some $ string "[]") -- ndarry []
-            v <- option mempty (string "...") -- varargs ...
+            g <- option mempty (jump *> generic) -- generic <T>
+            l <- option mempty (some $ jump *> string "[]") -- ndarry []
+            v <- option mempty (jump *> string "...") -- varargs ...
             pure $ concat [i, g, concat l, v]
         )
+
+-- | spacing around type parser, 'typ'
+typ'gap :: Stream s => S s String
+typ'gap = do
+  t <- typ
+  if not (null t) && last t `elem` ">]." then jump else gap
+  pure t
 
 -- | generic
 --
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
 generic :: Stream s => S s String
-generic = angles (many $ anycharBut '>') >>= \p -> pure $ "<" ++ p ++ ">"
+generic =
+  between
+    (string "<")
+    (string ">")
+    (many $ anycharBut '>')
+    >>= \p -> pure $ "<" ++ filter (/= ' ') p ++ ">"
 
 -- | annotations
 --
@@ -293,7 +300,7 @@ expr'iof = token $ do
 -- >>> ta expr'cast "(int) floating"
 -- Cast "int" (Iden "floating")
 expr'cast :: Stream s => S s Jexp
-expr'cast = token $ parens typ >>= \t -> Cast t <$> jexp
+expr'cast = token $ parens (jump *> typ <* jump) >>= \t -> Cast t <$> jexp
 
 -- | Array initialization expression
 expr'arr :: Stream s => S s Jexp
@@ -319,7 +326,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 expr'new :: Stream s => S s Jexp
 expr'new =
   token $
-    (string "new" *> gap *> token typ)
+    (string "new" *> gap *> typ)
       >>= \t -> New t <$> choice [args'expr, args'arr, some (squares jexp)]
 
 -- | Lambda expression
@@ -346,7 +353,7 @@ expr'this = This <$ symbol "this"
 expr'call :: Stream s => S s Jexp
 expr'call =
   token $
-    skip generic *> (expr'iden <|> Iden <$> symbol "super")
+    skip generic *> jump *> (expr'iden <|> Iden <$> symbol "super")
       >>= \i -> Call i <$> args'expr
 
 -- | Field/method chaining
@@ -384,7 +391,7 @@ expr'chain = token $ do
 args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
-  pair = typ *> gap *> var
+  pair = typ'gap *> var
   var = Iden <$> (iden <* skip (some (symbol "[]")))
   arg =
     skip (string "final" *> gap)
@@ -516,10 +523,11 @@ stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
   skip generic -- generic after mod
+  jump
   i <-
     choice
       [ typedef *> gap *> iden'typ -- class/interface iden
-      , typ *> gap *> iden -- Type iden
+      , typ'gap *> iden -- Type iden
       , iden'typ -- iden
       ]
   skip generic -- generic after iden
@@ -535,7 +543,7 @@ stmt'scope = do
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
-  i <- typ *> gap *> iden'typ -- Type Name
+  i <- typ'gap *> iden'typ -- Type Name
   skip generic
   jump
   a <- args'decl False -- type-iden pairs in argument declaration
@@ -588,9 +596,7 @@ stmt'bare = do
 stmt'assign :: Stream s => S s Jstmt
 stmt'assign = do
   skip (many $ modifier *> gap) -- modifiers
-  ( typ
-      *> gap
-      *> (Assign <$> sepBy1 (symbol ",") (decl'init <|> decl))
+  ( typ'gap *> (Assign <$> sepBy1 (symbol ",") (decl'init <|> decl))
     ) -- declare/init: type a, b=jexp,...
     <|> ( expr'chain >>= \i ->
             (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
@@ -713,7 +719,7 @@ stmt'try = do
     cond' <- -- catch (E1 | E2 e)
       symbol "catch"
         *> parens
-          (typ *> gap *> skipMany (symbol "|" *> typ *> gap) *> expr'iden)
+          (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
     Catch cond' <$> stmt'block -- catch {..}
   final' <- -- finally {..}
     option [] ((: []) . Catch O <$> (symbol "finally" *> stmt'block))
