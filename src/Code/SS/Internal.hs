@@ -23,4 +23,6 @@ import Data.String.Here
 -- }
 
 ff :: String
-ff = [here| |]
+ff =
+  [here|
+|]

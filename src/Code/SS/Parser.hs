@@ -261,6 +261,7 @@ factor = e <|> parens e
       --    | expr'str: "string"
       , expr'chain -- join above with '.' (access op) and ':' (method ref)
       , expr'arr -- init array: {1,2,3}
+      , expr'set -- expression set: (ch = in.read(buf,0,len))
       , expr'prim -- primitive
       ]
 
@@ -348,7 +349,7 @@ expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   t <- string "new" *> gap *> typ
   a <- choice [args'expr, args'arr, some (squares jexp)]
-  New t a <$> option ST (Scope t [] <$> block)
+  New t a <$> option ST (Scope t [] <$> braces jstmts)
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
@@ -510,9 +511,7 @@ semi'p = \case
   Throw {} -> True
   Flow {} -> True
   Do {} -> True -- do-while
-  Expr e -> case e of
-    New _ _ ST -> True -- new expr without block
-    _ -> False -- instant new block
+  Expr {} -> True
   If _ e _ -> case e of
     Expr {} -> True -- single expr in if-body
     Flow {} -> True -- break/continue
@@ -745,10 +744,10 @@ stmt'switch = do
 -- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else E (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
-  if'cond <- symbol "if" *> parens (expr'set <|> jexp) -- if (cond)
+  if'cond <- symbol "if" *> parens jexp -- if (cond)
   if' <- block'or'single -- {..} or j-stmt;
   elif' <- many $ do
-    elif'cond <- symbol "else if" *> parens (expr'set <|> jexp) -- else if (cond)
+    elif'cond <- symbol "else if" *> parens jexp -- else if (cond)
     Else elif'cond <$> block'or'single -- {..} or j-stmt;
   else' <-
     option [] ((: []) . Else E <$> (symbol "else" *> block'or'single)) -- else
@@ -780,11 +779,11 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  ( symbol "while" *> parens (expr'set <|> jexp) >>= \c ->
+  ( symbol "while" *> parens jexp >>= \c ->
       While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
   )
     <|> ( symbol "do" *> block'or'single >>= \b ->
-            (symbol "while" *> parens (expr'set <|> jexp))
+            (symbol "while" *> parens jexp)
               >>= \e -> pure $ Do b e
         ) -- do ({..} or j-stmt;) while (cond)
 
