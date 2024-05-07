@@ -200,6 +200,7 @@ data Jexp
   | InstOf String Jexp -- instanceOf
   | Cast String Jexp -- type casting
   | New String [Jexp] Jstmt -- new object
+  | Eset Jexp Jexp -- expression-context assignment
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] Jstmt -- lambda expression
   | Prefix String Jexp -- prefix unary operator
@@ -260,6 +261,7 @@ factor = e <|> parens e
       --    | expr'str: "string"
       , expr'chain -- join above with '.' (access op) and ':' (method ref)
       , expr'arr -- init array: {1,2,3}
+      , expr'set -- expression-set: (ch = in.read(buf,0,len))
       , expr'prim -- primitive
       ]
 
@@ -356,6 +358,13 @@ expr'lam = token $ do
   a <- args'decl True <|> ((: []) <$> expr'iden) -- (args) or value
   _ <- symbol "->"
   Lambda a <$> ((Scope "\\" a <$> block) <|> stmt'expr)
+
+-- | Assign statement within expression context
+--
+-- >>> ta expr'set "(ch = read(buf,0,3))"
+-- Eset (Iden "ch") (Call (Iden "read") [Iden "buf",Int 0,Int 3])
+expr'set :: Stream s => S s Jexp
+expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
