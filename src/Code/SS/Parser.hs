@@ -344,7 +344,7 @@ expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   t <- string "new" *> gap *> typ
   a <- choice [args'expr, args'arr, some (squares jexp)]
-  b <- option mempty block -- with anonymous inner class/init-blocks
+  b <- option mempty (braces jstmts) -- with anonymous inner class/init-blocks
   pure $ New t a (Scope t [] b)
 
 -- | Lambda expression
