@@ -261,7 +261,6 @@ factor = e <|> parens e
       --    | expr'str: "string"
       , expr'chain -- join above with '.' (access op) and ':' (method ref)
       , expr'arr -- init array: {1,2,3}
-      , expr'set -- expression-set: (ch = in.read(buf,0,len))
       , expr'prim -- primitive
       ]
 
@@ -349,7 +348,7 @@ expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   t <- string "new" *> gap *> typ
   a <- choice [args'expr, args'arr, some (squares jexp)]
-  New t a <$> option ST (Scope t [] <$> braces jstmts)
+  New t a <$> option ST (Scope t [] <$> block)
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
@@ -358,13 +357,6 @@ expr'lam = token $ do
   a <- args'decl True <|> ((: []) <$> expr'iden) -- (args) or value
   _ <- symbol "->"
   Lambda a <$> ((Scope "\\" a <$> block) <|> stmt'expr)
-
--- | Assign statement within expression context
---
--- >>> ta expr'set "(ch = read(buf,0,3))"
--- Eset (Iden "ch") (Call (Iden "read") [Iden "buf",Int 0,Int 3])
-expr'set :: Stream s => S s Jexp
-expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
@@ -402,6 +394,13 @@ expr'chain = token $ do
               <|> Iden <$> some (alphaNum <|> oneOf "_$") -- identifier
            )
   if null ext then pure base else pure $ Chain (base : ext)
+
+-- | Assign statement within expression context
+--
+-- >>> ta expr'set "(ch = read(buf,0,3))"
+-- Eset (Iden "ch") (Call (Iden "read") [Iden "buf",Int 0,Int 3])
+expr'set :: Stream s => S s Jexp
+expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 
 -- | Parse arguments in declaration
 -- If 'optType' is set, bare-type variables are admitted.
@@ -510,8 +509,10 @@ semi'p = \case
   Return {} -> True
   Throw {} -> True
   Flow {} -> True
-  Expr {} -> True
   Do {} -> True -- do-while
+  Expr e -> case e of
+    New _ _ ST -> True -- new expr without block
+    _ -> False -- instant new block
   If _ e _ -> case e of
     Expr {} -> True -- single expr in if-body
     Flow {} -> True -- break/continue
@@ -538,7 +539,7 @@ block = braces jstmts <* skip (symbol ";")
 -- >>> ta block'or'single "{ coffee.roasted(); }"
 -- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
 block'or'single :: Stream s => S s Jstmt
-block'or'single = (Scope mempty [] <$> block) <|> (jstmt <* symbol ";")
+block'or'single = (Scope mempty [] <$> block) <|> jstmt
 
 -- | New scope statment (class or method)
 --
@@ -744,10 +745,10 @@ stmt'switch = do
 -- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else E (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
-  if'cond <- symbol "if" *> parens jexp -- if (condition)
+  if'cond <- symbol "if" *> parens (expr'set <|> jexp) -- if (cond)
   if' <- block'or'single -- {..} or j-stmt;
   elif' <- many $ do
-    elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
+    elif'cond <- symbol "else if" *> parens (expr'set <|> jexp) -- else if (cond)
     Else elif'cond <$> block'or'single -- {..} or j-stmt;
   else' <-
     option [] ((: []) . Else E <$> (symbol "else" *> block'or'single)) -- else
@@ -779,11 +780,12 @@ stmt'for = do
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
-  ( symbol "while" *> parens jexp >>= \c ->
+  ( symbol "while" *> parens (expr'set <|> jexp) >>= \c ->
       While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
   )
     <|> ( symbol "do" *> block'or'single >>= \b ->
-            (symbol "while" *> parens jexp) >>= \e -> pure $ Do b e
+            (symbol "while" *> parens (expr'set <|> jexp))
+              >>= \e -> pure $ Do b e
         ) -- do ({..} or j-stmt;) while (cond)
 
 -- | synchronized statement
