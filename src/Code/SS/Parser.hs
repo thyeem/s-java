@@ -205,7 +205,7 @@ data Jexp
   | Prefix String Jexp -- prefix unary operator
   | Postfix String Jexp -- postfix unary operator
   | Infix String Jexp Jexp -- binary infix operator
-  | O -- nil expression
+  | E -- placeholder expression
   deriving (Show)
 
 instance Pretty Jexp
@@ -333,19 +333,21 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 -- | Object creation expression
 --
 -- >>> ta expr'new "new Object(\"obj\", 'Q', 12.34)"
--- New "Object" [Str "obj",Char "Q",Float 12.34]
+-- New "Object" [Str "obj",Char "Q",Float 12.34] ST
 --
 -- >>> ta expr'new "new int[]{1, 2, 3}"
--- New "int[]" [Int 1,Int 2,Int 3]
+-- New "int[]" [Int 1,Int 2,Int 3] ST
 --
 -- >>> ta expr'new "new byte[len / 2]"
--- New "byte" [Infix "/" (Iden "len") (Int 2)]
+-- New "byte" [Infix "/" (Iden "len") (Int 2)] ST
+--
+-- >>> ta expr'new "new Coffee() { Bean Ethiopia() {} }"
+-- New "Coffee" [] (Scope "Coffee" [] [Scope "Ethiopia" [] []])
 expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   t <- string "new" *> gap *> typ
   a <- choice [args'expr, args'arr, some (squares jexp)]
-  b <- option mempty (braces jstmts) -- with anonymous inner class/init-blocks
-  pure $ New t a (Scope t [] b)
+  New t a <$> option ST (Scope t [] <$> braces jstmts)
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
@@ -429,7 +431,7 @@ data Jstmt
   = Package String -- package statement
   | Import String -- import statement
   | Abstract Jexp [Jexp] -- abstract method statement
-  | Assign [Jstmt] -- a list of assignments, [Set {}]
+  | Sets [Jstmt] -- a list of assignments, [Set {}]
   | Set String Jexp Jexp -- each decl/assign (only valid in assign-statement)
   | Return Jexp -- return statement
   | Throw Jexp -- throw statement
@@ -447,6 +449,7 @@ data Jstmt
   | Catch Jexp Jstmt -- catch block (only valid in try-statement)
   | Enum [Jexp] -- enum declaration statement
   | Sync Jexp Jstmt -- synchronized statement
+  | ST -- placeholder statement
   deriving (Show)
 
 instance Pretty Jstmt
@@ -464,7 +467,7 @@ jstmt =
         , stmt'scope
         , stmt'abs
         , stmt'ret
-        , stmt'assign
+        , stmt'set
         , stmt'expr
         , stmt'flow
         , stmt'throw
@@ -494,7 +497,7 @@ semi'p = \case
   Package {} -> True
   Import {} -> True
   Abstract {} -> True
-  Assign {} -> True
+  Sets {} -> True
   Return {} -> True
   Throw {} -> True
   Flow {} -> True
@@ -603,25 +606,25 @@ stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 
 -- | Assignment statement
 --
--- >>> ta stmt'assign "int number"
--- Assign [Set "" (Iden "number") O]
+-- >>> ta stmt'set "int number"
+-- Sets [Set "" (Iden "number") E]
 --
--- >>> ta stmt'assign "int number = 5"
--- Assign [Set "=" (Iden "number") (Int 5)]
+-- >>> ta stmt'set "int number = 5"
+-- Sets [Set "=" (Iden "number") (Int 5)]
 --
--- >>> ta stmt'assign "int a, b=5"
--- Assign [Set "" (Iden "a") O,Set "=" (Iden "b") (Int 5)]
-stmt'assign :: Stream s => S s Jstmt
-stmt'assign = do
+-- >>> ta stmt'set "int a, b=5"
+-- Sets [Set "" (Iden "a") E,Set "=" (Iden "b") (Int 5)]
+stmt'set :: Stream s => S s Jstmt
+stmt'set = do
   skip (many $ modifier *> gap) -- modifiers
-  ( typ'gap *> (Assign <$> sepBy1 (symbol ",") (decl'init <|> decl))
+  ( typ'gap *> (Sets <$> sepBy1 (symbol ",") (decl'init <|> decl))
     ) -- declare/init: type a, b=jexp,...
     <|> ( expr'chain >>= \i ->
             (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
-              >>= \op -> jexp >>= (\o -> pure $ Assign [o]) . Set op i
+              >>= \op -> jexp >>= (\o -> pure $ Sets [o]) . Set op i
         ) -- assign: a=jexp; a+=jexp; a-=jexp; ...
  where
-  decl = iden'decl >>= \i -> pure $ Set mempty i O
+  decl = iden'decl >>= \i -> pure $ Set mempty i E
   decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
   iden'decl = Iden <$> (iden <* skip (some (symbol "[]")) <* jump)
   ops = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
@@ -631,7 +634,7 @@ stmt'assign = do
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure O))
+stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure E))
 
 -- | Expression statement
 --
@@ -673,7 +676,7 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 -- | Throw statement
 --
 -- >>> ta stmt'throw "throw new IllegalArgumentException(e)"
--- Throw (New "IllegalArgumentException" [Iden "e"])
+-- Throw (New "IllegalArgumentException" [Iden "e"] ST)
 stmt'throw :: Stream s => S s Jstmt
 stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 
@@ -683,14 +686,14 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- Try (Scope "" [] []) [Catch (Iden "e") (Scope "" [] [])]
 --
 -- >>> ta stmt'try "try {} finally {close();}"
--- Try (Scope "" [] []) [Catch O (Scope "" [] [Expr (Call (Iden "close") [])])]
+-- Try (Scope "" [] []) [Catch E (Scope "" [] [Expr (Call (Iden "close") [])])]
 --
 -- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Scope "" [] [Assign [Set "=" (Iden "b") (New "Buffer" [])]]) []
+-- Try (Scope "" [] [Sets [Set "=" (Iden "b") (New "Buffer" [] ST)]]) []
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- symbol "try" *> option [] (parens $ many stmt'assign) -- try (src)
+    a <- symbol "try" *> option [] (parens $ many stmt'set) -- try (src)
     b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
@@ -700,13 +703,13 @@ stmt'try = do
           (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
     Catch cond' <$> block'or'single -- catch {..}
   final' <- -- finally {..}
-    option [] ((: []) . Catch O <$> (symbol "finally" *> block'or'single))
+    option [] ((: []) . Catch E <$> (symbol "finally" *> block'or'single))
   pure $ Try try' (catch' ++ final')
 
 -- | switch statement
 --
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
--- Switch (Iden "a") [Case [Int 1] [Flow "break"],Case [O] [Expr (Int 2)]]
+-- Switch (Iden "a") [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
@@ -719,7 +722,7 @@ stmt'switch = do
                 *> sepBy1 (symbol ",") (expr'prim <|> expr'chain)
                 <* to
               ) -- case expr [,expr]:
-              <|> (symbol "default" *> to $> [O]) -- default:
+              <|> (symbol "default" *> to $> [E]) -- default:
           Case v <$> jstmts -- case body
       ) -- switch body
   pure $ Switch e b
@@ -729,7 +732,7 @@ stmt'switch = do
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
--- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else O (Scope "" [] [])]
+-- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else E (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
   if'cond <- symbol "if" *> parens jexp -- if (condition)
@@ -738,23 +741,23 @@ stmt'if = do
     elif'cond <- symbol "else if" *> parens jexp -- else if (condition)
     Else elif'cond <$> block'or'single -- {..} or j-stmt;
   else' <-
-    option [] ((: []) . Else O <$> (symbol "else" *> block'or'single)) -- else
+    option [] ((: []) . Else E <$> (symbol "else" *> block'or'single)) -- else
   pure $ If if'cond if' (elif' ++ else')
 
 -- | for-statement
 --
 -- >>> ta stmt'for "for (int i: numbers) {}"
--- For (Scope "" [] [Assign [Set "" (Iden "i") O],Expr (Iden "numbers")])
+-- For (Scope "" [] [Sets [Set "" (Iden "i") E],Expr (Iden "numbers")])
 --
 -- >>> ta stmt'for "for (int i=0;i<5;i++) {}"
--- For (Scope "" [] [Assign [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
+-- For (Scope "" [] [Sets [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
   b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
   pure $ For (Scope mempty [] (a ++ b))
  where
-  p = stmt'assign <|> stmt'expr
+  p = stmt'set <|> stmt'expr
   foreach = sepBy (symbol ":") p -- (int i : ix)
   classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
 
