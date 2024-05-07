@@ -4,13 +4,13 @@
 module Code.SS.Parser where
 
 import Data.Functor (($>))
+import Data.List (intercalate)
 import Text.S
   ( Operator (..)
   , Pretty (..)
   , S (..)
   , Stream
   , alphaNum
-  , anycharBut
   , between
   , braces'
   , char
@@ -18,7 +18,6 @@ import Text.S
   , choice
   , cmtB'
   , cmtL'
-  , cutBy
   , expr
   , floatB
   , gap'
@@ -33,6 +32,7 @@ import Text.S
   , option
   , parens'
   , sepBy
+  , sepBy'
   , sepBy1
   , skip
   , skipMany
@@ -83,7 +83,16 @@ modifier :: Stream s => S s String
 modifier =
   choice $
     string
-      <$> ["protected", "private", "public", "abstract", "default", "static", "final"]
+      <$> [ "private"
+          , "public"
+          , "protected"
+          , "static"
+          , "final"
+          , "abstract"
+          , "default"
+          , "synchronized"
+          , "transient"
+          ]
 
 -- | type definition keywords
 typedef :: Stream s => S s String
@@ -120,13 +129,23 @@ typ'gap = do
 --
 -- >>> ta generic "<T,U> c0ffee[]"
 -- "<T,U>"
+--
+-- >>> ta generic "<E extends Comparable <E>> c0ffee[]"
+-- "<E extends Comparable <E>>"
 generic :: Stream s => S s String
-generic =
-  between
-    (string "<")
-    (string ">")
-    (many $ anycharBut '>')
-    >>= \p -> pure $ "<" ++ filter (/= ' ') p ++ ">"
+generic = basic <|> extend
+ where
+  angles = between (symbol "<") (string ">")
+  ws = skip spaces
+  basic =
+    angles (sepBy (symbol ",") (iden'typ <* ws))
+      >>= \p -> pure $ "<" ++ intercalate "," p ++ ">"
+  extend = angles $ do
+    a <- iden'typ <* ws
+    e <- symbol "extends"
+    b <- iden'typ <* ws
+    g <- basic <* ws
+    pure $ "<" ++ unwords [a, e, b, g] ++ ">"
 
 -- | annotations
 --
@@ -373,7 +392,7 @@ expr'chain = token $ do
            )
   if null ext then pure base else pure $ Chain (base : ext)
 
--- | Parse L-values from a list of arguments in declaration
+-- | Parse arguments in declaration
 -- If 'optType' is set, bare-type variables are admitted.
 --
 -- >>> ta (args'decl False) "(final U out, int[][] matrix, String... str)"
@@ -391,19 +410,19 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
       *> (if optType then pair <|> var else pair)
       <* jump
 
--- | Parse L-values from a list of 'Jexp' arguments
+-- | Parse arguments of expression
 --
 -- >>> ta args'expr "(a,b,c)"
 -- [Iden "a",Iden "b",Iden "c"]
 args'expr :: Stream s => S s [Jexp]
 args'expr = token $ parens (sepBy (symbol ",") jexp)
 
--- | Parse L-values from array initialization expression
+-- | Parse array initialization expression
 --
 -- >>> ta args'arr "{1,2,3,}"
 -- [Int 1,Int 2,Int 3]
 args'arr :: Stream s => S s [Jexp]
-args'arr = token $ braces (cutBy (symbol ",") jexp)
+args'arr = token $ braces (sepBy' (symbol ",") jexp)
 
 -- | Definition of Java statement
 data Jstmt
@@ -573,17 +592,14 @@ stmt'enum = do
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> (cutBy (symbol ",") jexp <* skip (symbol ";"))
+          e <- Enum <$> (sepBy' (symbol ",") jexp <* skip (symbol ";"))
           s <- jstmts
           pure $ e : s
       )
 
 -- | Bare-block statement
 stmt'bare :: Stream s => S s Jstmt
-stmt'bare = do
-  skip (string "static" *> gap)
-  skip (choice (string <$> ["synchronized", "final", "transient"]) *> gap)
-  Scope mempty [] <$> block
+stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 
 -- | Assignment statement
 --
