@@ -380,7 +380,7 @@ expr'iden = token $ Iden <$> choice [iden, symbol "this", symbol "super"]
 expr'call :: Stream s => S s Jexp
 expr'call =
   token $
-    skip generic *> jump *> expr'iden >>= \i -> Call i <$> args'expr
+    skip (generic *> jump) *> expr'iden >>= \i -> Call i <$> args'expr
 
 -- | field/method chaining
 --
@@ -581,16 +581,14 @@ block'or'single = (Scope mempty [] <$> block) <|> jstmt
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
-  skip generic -- generic after mod
-  jump
+  skip (generic *> jump) -- generic after mod
   i <-
     choice
       [ typedef *> gap *> iden'typ -- class/interface iden
       , typ'gap *> iden -- Type iden
       , iden'typ -- iden
       ]
-  skip generic -- generic after iden
-  jump
+  skip (generic *> jump) -- generic after iden
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
   skipMany (choice [alphaNum, oneOf ",<>()", space]) -- ignore throws/extends
   Scope i a <$> block
@@ -603,8 +601,7 @@ stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
   i <- typ'gap *> iden'typ -- Type Name
-  skip generic
-  jump
+  skip (generic *> jump)
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
 
