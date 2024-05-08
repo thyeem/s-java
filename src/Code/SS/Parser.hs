@@ -10,6 +10,7 @@ import Text.S
   , Pretty (..)
   , S (..)
   , Stream
+  , alpha
   , alphaNum
   , between
   , braces'
@@ -18,6 +19,7 @@ import Text.S
   , choice
   , cmtB'
   , cmtL'
+  , endBy1
   , expr
   , floatB
   , gap'
@@ -26,6 +28,7 @@ import Text.S
   , identifier'
   , integer
   , javaDef
+  , liftA2
   , many
   , noneOf
   , oneOf
@@ -138,11 +141,11 @@ generic = basic <|> extend
   angles = between (symbol "<") (string ">")
   ws = skip spaces
   basic =
-    angles (sepBy (symbol ",") (iden'typ <* ws))
+    angles (sepBy (symbol ",") ((iden'typ <|> symbol "?") <* ws))
       >>= \p -> pure $ "<" ++ intercalate "," p ++ ">"
   extend = angles $ do
-    a <- iden'typ <* ws
-    e <- symbol "extends"
+    a <- (iden'typ <|> symbol "?") <* ws
+    e <- symbol "extends" <|> symbol "super"
     b <- iden'typ <* ws
     g <- basic <* ws
     pure $ "<" ++ unwords [a, e, b, g] ++ ">"
@@ -165,6 +168,13 @@ anno = do
           >>= \p -> pure $ "(" ++ concat p ++ ")"
       )
   pure $ c : n ++ a
+
+-- | field
+--
+-- >>> ta field "$c0ffee"
+-- "$c0ffee"
+field :: Stream s => S s String
+field = liftA2 (:) (alpha <|> oneOf "_$") (many $ alphaNum <|> oneOf "_$")
 
 -- | identifier
 --
@@ -372,7 +382,7 @@ expr'call =
   token $
     skip generic *> jump *> expr'iden >>= \i -> Call i <$> args'expr
 
--- | Field/method chaining
+-- | field/method chaining
 --
 -- >>> ta expr'chain "coffee.espresso(25)"
 -- Chain [Iden "coffee",Call (Iden "espresso") [Int 25]]
@@ -388,13 +398,21 @@ expr'chain = token $ do
     choice [expr'call, expr'idx, expr'iden, expr'new, expr'cast, expr'str]
   ext <-
     many $
-      ( symbol "." -- access field/method
-          <|> symbol "::" -- method reference
-      )
-        *> ( expr'call -- method call
-              <|> Iden <$> some (alphaNum <|> oneOf "_$") -- identifier
-           )
+      (symbol "." <|> symbol "::") -- access(.)/reference(::)
+        *> (expr'call <|> (Iden <$> field)) -- method/field
   if null ext then pure base else pure $ Chain (base : ext)
+
+-- | L-value candidate expression
+--
+-- >>> ta expr'lval "c0ffee.beans[]"
+-- Chain [Iden "c0ffee",Iden "beans"]
+expr'lval :: Stream s => S s Jexp
+expr'lval =
+  ( expr'idx <|> expr'iden >>= \b ->
+      many (symbol "." *> token (Iden <$> field))
+        >>= \e -> if null e then pure b else pure $ Chain (b : e)
+  )
+    <* skipMany (symbol "[]")
 
 -- | Assign statement within expression context
 --
@@ -415,7 +433,7 @@ args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   pair = typ'gap *> var
-  var = Iden <$> (iden <* skip (some (symbol "[]")))
+  var = Iden <$> (iden <* skipMany (symbol "[]"))
   arg =
     skip (string "final" *> gap)
       *> (if optType then pair <|> var else pair)
@@ -440,8 +458,8 @@ data Jstmt
   = Package String -- package statement
   | Import String -- import statement
   | Abstract Jexp [Jexp] -- abstract method statement
-  | Sets [Jstmt] -- a list of assignments, [Set {}]
-  | Set String Jexp Jexp -- each decl/assign (only valid in assign-statement)
+  | Sets [Jstmt] -- multiple decl/assign statement, [Set]
+  | Set String Jexp Jexp -- decl/assign statement
   | Return Jexp -- return statement
   | Throw Jexp -- throw statement
   | Flow String -- flow control statement
@@ -507,6 +525,7 @@ semi'p = \case
   Import {} -> True
   Abstract {} -> True
   Sets {} -> True
+  Set {} -> True
   Return {} -> True
   Throw {} -> True
   Flow {} -> True
@@ -616,27 +635,30 @@ stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 -- | Assignment statement
 --
 -- >>> ta stmt'set "int number"
--- Sets [Set "" (Iden "number") E]
+-- Set "" (Iden "number") E
 --
 -- >>> ta stmt'set "int number = 5"
--- Sets [Set "=" (Iden "number") (Int 5)]
+-- Set "=" (Iden "number") (Int 5)
 --
 -- >>> ta stmt'set "int a, b=5"
 -- Sets [Set "" (Iden "a") E,Set "=" (Iden "b") (Int 5)]
 stmt'set :: Stream s => S s Jstmt
 stmt'set = do
   skip (many $ modifier *> gap) -- modifiers
-  ( typ'gap *> (Sets <$> sepBy1 (symbol ",") (decl'init <|> decl))
-    ) -- declare/init: type a, b=jexp,...
-    <|> ( expr'chain >>= \i ->
-            (symbol "=" <|> choice (symbol <$> ops)) -- assign operators
-              >>= \op -> jexp >>= (\o -> pure $ Sets [o]) . Set op i
-        ) -- assign: a=jexp; a+=jexp; a-=jexp; ...
+  ( typ'gap *> sepBy1 (symbol ",") (assign <|> decl) >>= wrap
+    ) -- multiple declare/assign: type a, b=jexp,...
+    <|> assign -- multiple assign: a=b=..=jexp
+    <|> ( expr'lval >>= \i ->
+            choice (symbol <$> ops) -- augmented assign operators
+              >>= \op -> Set op i <$> jexp
+        ) -- aug-assign: a+=jexp; a-=jexp; ...
  where
-  decl = iden'decl >>= \i -> pure $ Set mempty i E
-  decl'init = iden'decl >>= \i -> symbol "=" >>= \op -> Set op i <$> jexp
-  iden'decl = Iden <$> (iden <* skip (some (symbol "[]")) <* jump)
   ops = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
+  wrap s = if length s == 1 then pure (head s) else pure (Sets s)
+  decl = flip (Set mempty) E <$> expr'lval
+  assign =
+    endBy1 (symbol "=") expr'lval
+      >>= \s -> jexp >>= \e -> wrap (flip (Set "=") e <$> s)
 
 -- | Return statement
 --
@@ -698,7 +720,7 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- Try (Scope "" [] []) [Catch E (Scope "" [] [Expr (Call (Iden "close") [])])]
 --
 -- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Scope "" [] [Sets [Set "=" (Iden "b") (New "Buffer" [] ST)]]) []
+-- Try (Scope "" [] [Set "=" (Iden "b") (New "Buffer" [] ST)]) []
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
@@ -728,7 +750,7 @@ stmt'switch = do
           v <-
             ( string "case"
                 *> gap
-                *> sepBy1 (symbol ",") (expr'prim <|> expr'chain)
+                *> sepBy1 (symbol ",") (expr'lval <|> expr'prim)
                 <* to
               ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [E]) -- default:
@@ -756,10 +778,10 @@ stmt'if = do
 -- | for-statement
 --
 -- >>> ta stmt'for "for (int i: numbers) {}"
--- For (Scope "" [] [Sets [Set "" (Iden "i") E],Expr (Iden "numbers")])
+-- For (Scope "" [] [Set "" (Iden "i") E,Expr (Iden "numbers")])
 --
 -- >>> ta stmt'for "for (int i=0;i<5;i++) {}"
--- For (Scope "" [] [Sets [Set "=" (Iden "i") (Int 0)],Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
+-- For (Scope "" [] [Set "=" (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)

@@ -26,8 +26,8 @@ import javax.crypto.spec.SecretKeySpec;
      * @return
      * @throws Exception
      */
-    // public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception
-    // {
+    public static String getHMACSHA512(String signatureKey, String textToHash)throws Exception
+    {
         // Check if Key is null or empty
         if (signatureKey==null||signatureKey.isEmpty())
             throw new IllegalArgumentException("HMACSHA512: key Parameter cannot be empty.");
@@ -49,7 +49,7 @@ import javax.crypto.spec.SecretKeySpec;
             throw new NullPointerException("For Signature Key :["+signatureKey+"] And Text To Hash ["+textToHash+"] the generated HMAC512 Key is null .Please contact Authorize.net for more information");
 
         return hashedValue.toUpperCase();
-    // }
+    }
 
     /**
      * This is the method to Calculate Hmac sha512 for given signature signatureKey  in byte array and text to hash in byte array
@@ -60,14 +60,14 @@ import javax.crypto.spec.SecretKeySpec;
      * @throws NoSuchAlgorithmException
      * @throws InvalidKeyException
      */
-    // public static String calculateHMAC(byte signatureKey[], String textToHash)
-            // throws SignatureException, NoSuchAlgorithmException, InvalidKeyException
-    // {
+    public static String calculateHMAC(byte signatureKey[], String textToHash)
+            throws SignatureException, NoSuchAlgorithmException, InvalidKeyException
+    {
         SecretKeySpec secretKeySpec = new SecretKeySpec(signatureKey, "HmacSHA512");
         Mac mac = Mac.getInstance("HmacSHA512");
         mac.init(secretKeySpec);
         return toHexString(mac.doFinal(textToHash.getBytes()));
-    // }
+    }
 
     /**
      * This is the method to convert byte array into hexadecimal string
@@ -87,13 +87,13 @@ import javax.crypto.spec.SecretKeySpec;
      * @param str
      * @return byte array
      */
-    public static byte[] hexStringToByteArray(String str) {
+    // public static byte[] hexStringToByteArray(String str) {
         int len = str.length();
         byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
+        // for (int i = 0; i < len; i += 2) {
             data[i / 2] = (byte) ((Character.digit(str.charAt(i), 16) << 4)
                     + Character.digit(str.charAt(i+1), 16));
-        }
+        // }
         return data;
-    }
+    // }
 // }
