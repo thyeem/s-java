@@ -1,6 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
-
 module Code.SS.Parser where
 
 import Data.Functor (($>))
@@ -483,61 +480,46 @@ instance Pretty Jstmt
 
 -- | Java statement parser
 jstmt :: Stream s => S s Jstmt
-jstmt =
+jstmt = stmt'block <|> (stmt'simple <* symbol ";")
+
+-- | Java [statement] parser
+jstmts :: Stream s => S s [Jstmt]
+jstmts = many jstmt >>= \x -> if not (null x) then pure x else many stmt'simple
+
+stmt'block :: Stream s => S s Jstmt
+stmt'block =
   between
     jump
     jump
     ( choice
-        [ stmt'pkg
-        , stmt'import
-        , stmt'enum
-        , stmt'scope
-        , stmt'abs
-        , stmt'ret
-        , stmt'set
-        , stmt'expr
-        , stmt'flow
-        , stmt'throw
-        , stmt'if
+        [ stmt'if
         , stmt'for
         , stmt'while
         , stmt'switch
         , stmt'try
         , stmt'sync
         , stmt'bare
+        , stmt'enum
+        , stmt'scope
         ]
     )
 
--- | Java [statement] parser
-jstmts :: Stream s => S s [Jstmt]
-jstmts = do
-  a <- many $ jstmt >>= \s -> (if semi'p s then s <$ symbol ";" else pure s)
-  x <- many jstmt
-  if
-      | null a -> skip (symbol ";") $> x -- single statement
-      | null x -> pure a -- well-formed multiple statement
-      | otherwise -> symbol ";" $> a ++ x -- malformed multiple statement
-
--- | Check if the ST (statement terminator or semicolon ';') is required
-semi'p :: Jstmt -> Bool
-semi'p = \case
-  Package {} -> True
-  Import {} -> True
-  Abstract {} -> True
-  Sets {} -> True
-  Set {} -> True
-  Return {} -> True
-  Throw {} -> True
-  Flow {} -> True
-  Do {} -> True -- do-while
-  Expr {} -> True
-  If _ e _ -> case e of
-    Expr {} -> True -- single expr in if-body
-    Flow {} -> True -- break/continue
-    Throw {} -> True -- throw
-    Return {} -> True -- return
-    _ -> False -- multiple statment cases
-  _ -> False -- otherwise
+stmt'simple :: Stream s => S s Jstmt
+stmt'simple =
+  between
+    jump
+    jump
+    ( choice
+        [ stmt'pkg
+        , stmt'import
+        , stmt'abs
+        , stmt'ret
+        , stmt'set
+        , stmt'expr
+        , stmt'flow
+        , stmt'throw
+        ]
+    )
 
 -- | Common block parser
 block :: Stream s => S s [Jstmt]
@@ -615,12 +597,12 @@ stmt'abs = do
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
   skip (many $ modifier *> gap) -- modifiers
-  i <- string "enum" *> gap *> iden'typ -- enum Name
-  jump
+  i <- string "enum" *> gap *> iden'typ <* jump -- enum Name
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> (sepBy' (symbol ",") jexp <* skip (symbol ";"))
+          e <- Enum <$> sepBy' (symbol ",") jexp
+          skip (symbol ";")
           s <- jstmts
           pure $ e : s
       )
@@ -722,7 +704,7 @@ stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
     a <- symbol "try" *> option [] (parens $ many stmt'set) -- try (src)
-    b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
+    b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
     cond' <- -- catch (E1 | E2 e)
@@ -782,7 +764,7 @@ stmt'if = do
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
-  b <- block <|> ((: []) <$> (jstmt <* symbol ";")) -- {..} or j-stmt;
+  b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
   pure $ For (Scope mempty [] (a ++ b))
  where
   p = stmt'set <|> stmt'expr
