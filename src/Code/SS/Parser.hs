@@ -192,9 +192,14 @@ iden'typ =
     ) -- primitive types
     <|> iden
 
+newtype Identifier = Identifier (String, Source)
+
+instance Show Identifier where
+  show (Identifier (str, _)) = str
+
 -- | locator: get source location where parsing begins
-loc :: Stream s => S s String -> S s (String, Source)
-loc p = get'source >>= \src -> (,src) <$> p
+loc :: Stream s => S s String -> S s Identifier
+loc p = get'source >>= \src -> Identifier . (,src) <$> p
 
 -- | Definition of Java expression
 data Jexp
@@ -204,7 +209,7 @@ data Jexp
   | Float Double -- primitive float
   | Char String -- char literal
   | Str String -- string literal
-  | Iden (String, Source) -- identifier
+  | Iden Identifier -- identifier
   | Chain [Jexp] -- field/method/reference chain
   | Array [Jexp] -- array initialization
   | Index Jexp [Jexp] -- array access
@@ -317,7 +322,7 @@ expr'str = token $ Str <$> stringLit' javaDef
 -- | Instanceof expression
 --
 -- >>> ta expr'iof "name instanceof String"
--- InstOf "String" (Iden "name")
+-- InstOf "String" (Iden name)
 expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
   i <- expr'chain
@@ -328,7 +333,7 @@ expr'iof = token $ do
 -- | Type cast expression
 --
 -- >>> ta expr'cast "(int) floating"
--- Cast "int" (Iden "floating")
+-- Cast "int" (Iden floating)
 expr'cast :: Stream s => S s Jexp
 expr'cast = token $ parens (jump *> typ <* jump) >>= \t -> Cast t <$> jexp
 
@@ -339,7 +344,7 @@ expr'arr = Array <$> args'arr
 -- | Array access expression
 --
 -- >>> ta expr'idx "arr[i][0]"
--- Index (Iden "arr") [Iden "i",Int 0]
+-- Index (Iden arr) [Iden i,Int 0]
 expr'idx :: Stream s => S s Jexp
 expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 
@@ -352,7 +357,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 -- New "int[]" [Int 1,Int 2,Int 3] ST
 --
 -- >>> ta expr'new "new byte[len / 2]"
--- New "byte" [Infix "/" (Iden "len") (Int 2)] ST
+-- New "byte" [Infix "/" (Iden len) (Int 2)] ST
 --
 -- >>> ta expr'new "new Coffee() { Bean Ethiopia() {} }"
 -- New "Coffee" [] (Scope "Coffee" [] [Scope "Ethiopia" [] []])
@@ -377,7 +382,7 @@ expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 -- | Method invocation expression
 --
 -- >>> ta expr'call "valueOf(2)"
--- Call (Iden "valueOf") [Int 2]
+-- Call (Iden valueOf) [Int 2]
 expr'call :: Stream s => S s Jexp
 expr'call =
   token $
@@ -386,13 +391,13 @@ expr'call =
 -- | field/method chaining
 --
 -- >>> ta expr'chain "coffee.espresso(25)"
--- Chain [Iden "coffee",Call (Iden "espresso") [Int 25]]
+-- Chain [Iden coffee,Call (Iden espresso) [Int 25]]
 --
 -- >>> ta expr'chain "coffee"
--- Iden "coffee"
+-- Iden coffee
 --
 -- >>> ta expr'chain "this.coffee"
--- Chain [Iden "this",Iden "coffee"]
+-- Chain [Iden this,Iden coffee]
 expr'chain :: Stream s => S s Jexp
 expr'chain = token $ do
   base <-
@@ -406,7 +411,7 @@ expr'chain = token $ do
 -- | L-value candidate expression
 --
 -- >>> ta expr'lval "c0ffee.beans[]"
--- Chain [Iden "c0ffee",Iden "beans"]
+-- Chain [Iden c0ffee,Iden beans]
 expr'lval :: Stream s => S s Jexp
 expr'lval =
   ( expr'idx <|> expr'iden >>= \b ->
@@ -418,7 +423,7 @@ expr'lval =
 -- | Assign statement within expression context
 --
 -- >>> ta expr'set "(ch = read(buf,0,3))"
--- Eset (Iden "ch") (Call (Iden "read") [Iden "buf",Int 0,Int 3])
+-- Eset (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
 expr'set :: Stream s => S s Jexp
 expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 
@@ -426,10 +431,10 @@ expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 -- If 'optType' is set, bare-type variables are admitted.
 --
 -- >>> ta (args'decl False) "(final U out, int[][] matrix, String... str)"
--- [Iden "out",Iden "matrix",Iden "str"]
+-- [Iden out,Iden matrix,Iden str]
 --
 -- >>> ta (args'decl True) "(out, matrix, str)"
--- [Iden "out",Iden "matrix",Iden "str"]
+-- [Iden out,Iden matrix,Iden str]
 args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
@@ -443,7 +448,7 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
 -- | Parse arguments of expression
 --
 -- >>> ta args'expr "(a,b,c)"
--- [Iden "a",Iden "b",Iden "c"]
+-- [Iden a,Iden b,Iden c]
 args'expr :: Stream s => S s [Jexp]
 args'expr = token $ parens (sepBy (symbol ",") jexp)
 
@@ -539,29 +544,29 @@ jstmt'simple =
 -- But this is not be used for a class/method/lambda blocks.
 --
 -- >>> ta block'or'single "{ coffee.roasted(); }"
--- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
+-- Scope "" [] [Expr (Chain [Iden coffee,Call (Iden roasted) []])]
 block'or'single :: Stream s => S s Jstmt
 block'or'single = (Scope mempty [] <$> block) <|> jstmt
 
 -- | New scope statment (class or method)
 --
 -- >>> ta stmt'scope "public static byte[] hexStringToByteArray(String str) {}"
--- Scope "hexStringToByteArray" [Iden "str"] []
+-- Scope "hexStringToByteArray" [Iden str] []
 --
 -- >>> ta stmt'scope "static void main(String[] args) throws Exception {}"
--- Scope "main" [Iden "args"] []
+-- Scope "main" [Iden args] []
 --
 -- >>> ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
--- Scope "fn" [Iden "in",Iden "out",Iden "matrix",Iden "str"] []
+-- Scope "fn" [Iden in,Iden out,Iden matrix,Iden str] []
 --
 -- >>> ta stmt'scope "public static void mod(int a, int b) { return a % b; }"
--- Scope "mod" [Iden "a",Iden "b"] [Return (Infix "%" (Iden "a") (Iden "b"))]
+-- Scope "mod" [Iden a,Iden b] [Return (Infix "%" (Iden a) (Iden b))]
 --
 -- >>> ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
--- Scope "toHexString" [Iden "bytes"] [Expr (Infix "+" (Int 3) (Int 5))]
+-- Scope "toHexString" [Iden bytes] [Expr (Infix "+" (Int 3) (Int 5))]
 --
 -- >>> ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
--- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
+-- Scope "Ethiopia" [] [Scope "drip" [Iden bean] []]
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
@@ -577,7 +582,7 @@ stmt'scope = do
 -- | Abstract method statement
 --
 -- >>> ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
--- Scope "Ethiopia" [] [Scope "drip" [Iden "bean"] []]
+-- Scope "Ethiopia" [] [Scope "drip" [Iden bean] []]
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
@@ -589,10 +594,10 @@ stmt'abs = do
 -- | enum statement
 --
 -- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,}"
--- Scope "Color" [] [Enum [Iden "RED",Iden "GREEN",Iden "BLUE"]]
+-- Scope "Color" [] [Enum [Iden RED,Iden GREEN,Iden BLUE]]
 --
 -- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,;}"
--- Scope "Color" [] [Enum [Iden "RED",Iden "GREEN",Iden "BLUE"]]
+-- Scope "Color" [] [Enum [Iden RED,Iden GREEN,Iden BLUE]]
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
   skip (many $ modifier *> gap) -- modifiers
@@ -613,13 +618,13 @@ stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 -- | Assignment statement
 --
 -- >>> ta stmt'set "int number"
--- Set "" (Iden "number") E
+-- Set "" (Iden number) E
 --
 -- >>> ta stmt'set "int number = 5"
--- Set "=" (Iden "number") (Int 5)
+-- Set "=" (Iden number) (Int 5)
 --
 -- >>> ta stmt'set "int a, b=5"
--- Sets [Set "" (Iden "a") E,Set "=" (Iden "b") (Int 5)]
+-- Sets [Set "" (Iden a) E,Set "=" (Iden b) (Int 5)]
 stmt'set :: Stream s => S s Jstmt
 stmt'set = do
   skip (many $ modifier *> gap) -- modifiers
@@ -648,7 +653,7 @@ stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure E))
 -- | Expression statement
 --
 -- >>> ta stmt'expr "bean.roasted()"
--- Expr (Chain [Iden "bean",Call (Iden "roasted") []])
+-- Expr (Chain [Iden bean,Call (Iden roasted) []])
 stmt'expr :: Stream s => S s Jstmt
 stmt'expr = Expr <$> jexp
 
@@ -685,20 +690,20 @@ stmt'flow = Flow <$> (symbol "continue" <|> symbol "break")
 -- | Throw statement
 --
 -- >>> ta stmt'throw "throw new IllegalArgumentException(e)"
--- Throw (New "IllegalArgumentException" [Iden "e"] ST)
+-- Throw (New "IllegalArgumentException" [Iden e] ST)
 stmt'throw :: Stream s => S s Jstmt
 stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 
 -- | try-catch statement
 --
 -- >>> ta stmt'try "try {} catch (Except e) {}"
--- Try (Scope "" [] []) [Catch (Iden "e") (Scope "" [] [])]
+-- Try (Scope "" [] []) [Catch (Iden e) (Scope "" [] [])]
 --
 -- >>> ta stmt'try "try {} finally {close();}"
--- Try (Scope "" [] []) [Catch E (Scope "" [] [Expr (Call (Iden "close") [])])]
+-- Try (Scope "" [] []) [Catch E (Scope "" [] [Expr (Call (Iden close) [])])]
 --
 -- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Scope "" [] [Set "=" (Iden "b") (New "Buffer" [] ST)]) []
+-- Try (Scope "" [] [Set "=" (Iden b) (New "Buffer" [] ST)]) []
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
@@ -718,7 +723,7 @@ stmt'try = do
 -- | switch statement
 --
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
--- Switch (Iden "a") [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
+-- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
 stmt'switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
@@ -741,7 +746,7 @@ stmt'switch = do
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
--- If (Infix ">" (Iden "a") (Iden "b")) (Scope "" [] []) [Else E (Scope "" [] [])]
+-- If (Infix ">" (Iden a) (Iden b)) (Scope "" [] []) [Else E (Scope "" [] [])]
 stmt'if :: Stream s => S s Jstmt
 stmt'if = do
   if'cond <- symbol "if" *> parens jexp -- if (cond)
@@ -756,10 +761,10 @@ stmt'if = do
 -- | for-statement
 --
 -- >>> ta stmt'for "for (int i: numbers) {}"
--- For (Scope "" [] [Set "" (Iden "i") E,Expr (Iden "numbers")])
+-- For (Scope "" [] [Set "" (Iden i) E,Expr (Iden numbers)])
 --
 -- >>> ta stmt'for "for (int i=0;i<5;i++) {}"
--- For (Scope "" [] [Set "=" (Iden "i") (Int 0),Expr (Infix "<" (Iden "i") (Int 5)),Expr (Postfix "++" (Iden "i"))])
+-- For (Scope "" [] [Set "=" (Iden i) (Int 0),Expr (Infix "<" (Iden i) (Int 5)),Expr (Postfix "++" (Iden i))])
 stmt'for :: Stream s => S s Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
@@ -773,10 +778,10 @@ stmt'for = do
 -- | while/do-while statement
 --
 -- >>> ta stmt'while "while (a < 5) {a++;}"
--- While (Infix "<" (Iden "a") (Int 5)) (Scope "" [] [Expr (Postfix "++" (Iden "a"))])
+-- While (Infix "<" (Iden a) (Int 5)) (Scope "" [] [Expr (Postfix "++" (Iden a))])
 --
 -- >>> ta stmt'while "do {a++;} while (a < 5)"
--- Do (Scope "" [] [Expr (Postfix "++" (Iden "a"))]) (Infix "<" (Iden "a") (Int 5))
+-- Do (Scope "" [] [Expr (Postfix "++" (Iden a))]) (Infix "<" (Iden a) (Int 5))
 stmt'while :: Stream s => S s Jstmt
 stmt'while =
   ( symbol "while" *> parens jexp >>= \c ->
