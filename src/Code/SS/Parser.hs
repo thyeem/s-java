@@ -136,19 +136,19 @@ typ'gap = do
 -- >>> ta generic "<E extends Comparable <E>> c0ffee[]"
 -- "<E extends Comparable <E>>"
 generic :: Stream s => S s String
-generic = basic <|> extend
+generic = basic <|> ext
  where
   angles = between (symbol "<") (string ">")
   ws = skip spaces
   basic =
-    angles (sepBy (symbol ",") ((iden'typ <|> symbol "?") <* ws))
+    angles (sepBy (symbol ",") ((iden'typ <* ws) <|> symbol "?"))
       >>= \p -> pure $ "<" ++ intercalate "," p ++ ">"
-  extend = angles $ do
-    a <- (iden'typ <|> symbol "?") <* ws
+  ext = angles $ do
+    i <- (iden'typ <|> symbol "?") <* ws
     e <- symbol "extends" <|> symbol "super"
     b <- iden'typ <* ws
     g <- basic <* ws
-    pure $ "<" ++ unwords [a, e, b, g] ++ ">"
+    pure $ "<" ++ unwords [i, e, b, g] ++ ">"
 
 -- | annotations
 --
