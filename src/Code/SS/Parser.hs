@@ -480,61 +480,59 @@ instance Pretty Jstmt
 
 -- | Java statement parser
 jstmt :: Stream s => S s Jstmt
-jstmt = stmt'block <|> (stmt'simple <* symbol ";")
+jstmt =
+  between
+    jump
+    jump
+    (jstmt'block <|> (jstmt'simple <* symbol ";"))
 
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
-jstmts = many jstmt >>= \x -> if not (null x) then pure x else many stmt'simple
-
-stmt'block :: Stream s => S s Jstmt
-stmt'block =
-  between
-    jump
-    jump
-    ( choice
-        [ stmt'if
-        , stmt'for
-        , stmt'while
-        , stmt'switch
-        , stmt'try
-        , stmt'sync
-        , stmt'bare
-        , stmt'enum
-        , stmt'scope
-        ]
-    )
-
-stmt'simple :: Stream s => S s Jstmt
-stmt'simple =
-  between
-    jump
-    jump
-    ( choice
-        [ stmt'pkg
-        , stmt'import
-        , stmt'abs
-        , stmt'ret
-        , stmt'set
-        , stmt'expr
-        , stmt'flow
-        , stmt'throw
-        ]
-    )
+jstmts = many jstmt >>= \x -> if not (null x) then pure x else many jstmt'simple
 
 -- | Common block parser
 block :: Stream s => S s [Jstmt]
 block = braces jstmts <* skip (symbol ";")
 
+-- | Java statement that can have a curly-braced block
+jstmt'block :: Stream s => S s Jstmt
+jstmt'block =
+  choice
+    [ stmt'if
+    , stmt'for
+    , stmt'while
+    , stmt'switch
+    , stmt'try
+    , stmt'sync
+    , stmt'bare
+    , stmt'enum
+    , stmt'scope
+    ]
+
+-- | Java simple statement that requires semicolon at the end
+jstmt'simple :: Stream s => S s Jstmt
+jstmt'simple =
+  choice
+    [ stmt'pkg
+    , stmt'import
+    , stmt'abs
+    , stmt'ret
+    , stmt'set
+    , stmt'expr
+    , stmt'flow
+    , stmt'throw
+    ]
+
 -- | Parse either a scoped brace block or Java's single statement
 --
--- Here the braced block is not a class/method block, but rather a block that
--- does not actually define a new scope.
+-- This parser is for:
 --
 -- 1. control-statement(if, swith, while, for, ..)
 -- 1. try-catch
 -- 1. static/synchronized block
 -- 1. bare block
--- These block have their own var-scopes, so this should be taken into account.
+--
+-- But this is not be used for a class/method/lambda blocks.
 --
 -- >>> ta block'or'single "{ coffee.roasted(); }"
 -- Scope "" [] [Expr (Chain [Iden "coffee",Call (Iden "roasted") []])]
