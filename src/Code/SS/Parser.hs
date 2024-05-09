@@ -94,10 +94,6 @@ modifier =
           , "transient"
           ]
 
--- | type definition keywords
-typedef :: Stream s => S s String
-typedef = choice $ string <$> ["class", "interface"]
-
 -- | type
 -- >>> ta typ "int[][] c0ffee"
 -- "int[][]"
@@ -561,16 +557,13 @@ block'or'single = (Scope mempty [] <$> block) <|> jstmt
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
-  skip (generic *> jump) -- generic after mod
+  skip (generic *> jump) -- generic
   i <-
-    choice
-      [ typedef *> gap *> iden'typ -- class/interface iden
-      , typ'gap *> iden -- Type iden
-      , iden'typ -- iden
-      ]
-  skip (generic *> jump) -- generic after iden
+    ((string "class" <|> string "interface") *> gap *> iden'typ) -- class/interface
+      <|> ((typ'gap *> iden) <|> iden'typ) -- method
+  skip (generic *> jump) -- generic
   a <- option [] (args'decl False) -- type-iden pairs in argument declaration
-  skipMany (choice [alphaNum, oneOf ",<>()", space]) -- ignore throws/extends
+  skipMany (choice [alphaNum, oneOf ",<>()", space]) -- throws/extends/implements
   Scope i a <$> block
 
 -- | Abstract method statement
