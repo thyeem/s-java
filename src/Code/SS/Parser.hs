@@ -1,3 +1,5 @@
+{-# LANGUAGE TupleSections #-}
+
 module Code.SS.Parser where
 
 import Data.Functor (($>))
@@ -6,6 +8,7 @@ import Text.S
   ( Operator (..)
   , Pretty (..)
   , S (..)
+  , Source (..)
   , Stream
   , alpha
   , alphaNum
@@ -20,6 +23,7 @@ import Text.S
   , expr
   , floatB
   , gap'
+  , get'source
   , hexDigit
   , hexadecimal
   , identifier'
@@ -188,6 +192,10 @@ iden'typ =
     ) -- primitive types
     <|> iden
 
+-- | locator: get source location where parsing begins
+loc :: Stream s => S s String -> S s (String, Source)
+loc p = get'source >>= \src -> (,src) <$> p
+
 -- | Definition of Java expression
 data Jexp
   = Null -- primitive null
@@ -196,7 +204,7 @@ data Jexp
   | Float Double -- primitive float
   | Char String -- char literal
   | Str String -- string literal
-  | Iden String -- identifier
+  | Iden (String, Source) -- identifier
   | Chain [Jexp] -- field/method/reference chain
   | Array [Jexp] -- array initialization
   | Index Jexp [Jexp] -- array access
@@ -244,9 +252,9 @@ jexp = expr atom priority
       ]
     , [infix' "?", infix' ":"] -- ternary operator as bop
     ]
-  infix' sym = InfixL $ symbol sym $> Infix sym
-  prefix sym = PrefixU $ symbol sym $> Prefix sym
-  postfix sym = PostfixU $ symbol sym $> Postfix sym
+  infix' x = InfixL $ symbol x $> Infix x
+  prefix x = PrefixU $ symbol x $> Prefix x
+  postfix x = PostfixU $ symbol x $> Postfix x
 
 -- | Expressions with the highest priority
 factor :: Stream s => S s Jexp
@@ -364,7 +372,7 @@ expr'lam = token $ do
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
-expr'iden = token $ Iden <$> choice [iden, symbol "this", symbol "super"]
+expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 
 -- | Method invocation expression
 --
@@ -392,7 +400,7 @@ expr'chain = token $ do
   ext <-
     many $
       (symbol "." <|> symbol "::") -- access(.)/reference(::)
-        *> (expr'call <|> (Iden <$> field)) -- method/field
+        *> (expr'call <|> (Iden <$> loc field)) -- method/field
   if null ext then pure base else pure $ Chain (base : ext)
 
 -- | L-value candidate expression
@@ -402,7 +410,7 @@ expr'chain = token $ do
 expr'lval :: Stream s => S s Jexp
 expr'lval =
   ( expr'idx <|> expr'iden >>= \b ->
-      many (symbol "." *> token (Iden <$> field))
+      many (symbol "." *> token (Iden <$> loc field))
         >>= \e -> if null e then pure b else pure $ Chain (b : e)
   )
     <* skipMany (symbol "[]")
@@ -426,7 +434,7 @@ args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   pair = typ'gap *> var
-  var = Iden <$> (iden <* skipMany (symbol "[]"))
+  var = Iden <$> (loc iden <* skipMany (symbol "[]"))
   arg =
     skip (string "final" *> gap)
       *> (if optType then pair <|> var else pair)
@@ -573,7 +581,7 @@ stmt'scope = do
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
-  i <- typ'gap *> iden'typ -- Type Name
+  i <- typ'gap *> loc iden'typ -- Type Name
   skip (generic *> jump)
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
