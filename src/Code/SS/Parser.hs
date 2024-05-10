@@ -1,5 +1,3 @@
-{-# LANGUAGE TupleSections #-}
-
 module Code.SS.Parser where
 
 import Data.Functor (($>))
@@ -192,36 +190,36 @@ iden'typ =
     ) -- primitive types
     <|> iden
 
-newtype Identifier = Identifier (String, Source)
+data Identifier = Identifier Source !String
 
 instance Show Identifier where
-  show (Identifier (str, _)) = str
+  show (Identifier _ x) = x
 
 -- | locator: get source location where parsing begins
 loc :: Stream s => S s String -> S s Identifier
-loc p = get'source >>= \src -> Identifier . (,src) <$> p
+loc p = get'source >>= \src -> Identifier src <$> p
 
 -- | Definition of Java expression
 data Jexp
   = Null -- primitive null
-  | Bool String -- primitive true/false
-  | Int Integer -- primitive integer
-  | Float Double -- primitive float
-  | Char String -- char literal
-  | Str String -- string literal
+  | Bool !String -- primitive true/false
+  | Int !Integer -- primitive integer
+  | Float !Double -- primitive float
+  | Char !String -- char literal
+  | Str !String -- string literal
   | Iden Identifier -- identifier
   | Chain [Jexp] -- field/method/reference chain
   | Array [Jexp] -- array initialization
   | Index Jexp [Jexp] -- array access
-  | InstOf String Jexp -- instanceOf
-  | Cast String Jexp -- type casting
-  | New String [Jexp] Jstmt -- new object
+  | InstOf !String Jexp -- instanceOf
+  | Cast !String Jexp -- type casting
+  | New !String [Jexp] Jstmt -- new object
   | Eset Jexp Jexp -- expression-context assignment
   | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] Jstmt -- lambda expression
-  | Prefix String Jexp -- prefix unary operator
-  | Postfix String Jexp -- postfix unary operator
-  | Infix String Jexp Jexp -- binary infix operator
+  | Prefix !String Jexp -- prefix unary operator
+  | Postfix !String Jexp -- postfix unary operator
+  | Infix !String Jexp Jexp -- binary infix operator
   | E -- placeholder expression
   deriving (Show)
 
@@ -461,16 +459,16 @@ args'arr = token $ braces (sepBy' (symbol ",") jexp)
 
 -- | Definition of Java statement
 data Jstmt
-  = Package String -- package statement
-  | Import String -- import statement
+  = Package !String -- package statement
+  | Import !String -- import statement
   | Abstract Jexp [Jexp] -- abstract method statement
   | Sets [Jstmt] -- multiple decl/assign statement, [Set]
-  | Set String Jexp Jexp -- decl/assign statement
+  | Set !String Jexp Jexp -- decl/assign statement
   | Return Jexp -- return statement
   | Throw Jexp -- throw statement
-  | Flow String -- flow control statement
+  | Flow !String -- flow control statement
   | Expr Jexp -- expression statement
-  | Scope String [Jexp] [Jstmt] -- new scope
+  | Scope !String [Jexp] [Jstmt] -- new scope
   | If Jexp Jstmt [Jstmt] -- if-statement
   | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
   | For Jstmt -- for-statement
