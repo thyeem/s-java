@@ -38,7 +38,6 @@ import Text.S
   , skip
   , skipMany
   , some
-  , space
   , spaces
   , squares'
   , string
@@ -79,7 +78,7 @@ braces = braces' jump
 squares :: Stream s => S s a -> S s a
 squares = squares' jump
 
--- | Parser for nothing
+-- | Parser for monoid's identity element
 nil :: Stream s => S s [a]
 nil = pure mempty
 
@@ -145,7 +144,7 @@ typ =
     <|> ( do
             i <- iden'typ -- type name
             g <- (jump *> generic) <|> nil -- generic <T>
-            l <- some (jump *> string "[]") <|> nil -- ndarry []
+            l <- some (jump *> string "[]") <|> nil -- ndarry [][]
             v <- (jump *> string "...") <|> nil -- varargs ...
             pure $ concat [i, g, concat l, v]
         )
@@ -162,25 +161,20 @@ typ'gap = typ >>= \t -> if last t `elem` ">]." then jump $> t else gap $> t
 -- >>> ta generic "<E extends Comparable <E>> c0ffee[]"
 -- "<E extends Comparable <E>>"
 generic :: Stream s => S s String
-generic = basic <|> ext
+generic = base <|> ext
  where
   angles = between (symbol "<") (string ">")
   ws = skip spaces
-  basic =
-    angles
-      ( sepBy
-          (symbol ",")
-          ( (iden'typ <* ws >>= \i -> many basic >>= reorg i "" "") -- <T,<U>>
-              <|> symbol "?" -- <?>
-          )
-      )
+  unit = iden'typ <* ws >>= \i -> many base >>= reorg i "" "" -- T or T<U>
+  base =
+    angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <T> or <?>
       >>= reorg "<" ">" ","
   ext = angles $ do
     i <- (iden'typ <|> symbol "?") <* ws
     e <- symbol "extends" <|> symbol "super"
     b <- iden'typ <* ws
-    g <- basic <* ws
-    pure $ "<" ++ unwords [i, e, b, g] ++ ">"
+    g <- base <* ws
+    reorg "<" ">" " " [i, e, b, g]
 
 -- | annotations
 --
@@ -598,6 +592,9 @@ block'or'single = (Scope mempty [] <$> block) <|> jstmt
 -- >>> ta stmt'scope "static void main(String[] args) throws Exception {}"
 -- Scope "main" [Iden args] []
 --
+-- >>> ta stmt'scope "public class Pair<T, U> { T first; U second; }"
+-- Scope "Pair<T,U>" [] [Set "" (Iden first) E,Set "" (Iden second) E]
+--
 -- >>> ta stmt'scope "public <T, U> void fn(final T in, U out, int[][] matrix, String... str) {}"
 -- Scope "fn" [Iden in,Iden out,Iden matrix,Iden str] []
 --
@@ -607,19 +604,30 @@ block'or'single = (Scope mempty [] <$> block) <|> jstmt
 -- >>> ta stmt'scope "private static String toHexString(byte[] bytes) { 3 + 5; }"
 -- Scope "toHexString" [Iden bytes] [Expr (Infix "+" (Int 3) (Int 5))]
 --
--- >>> ta stmt'scope "class Ethiopia { void drip(Coffee bean) {} }"
+-- >>> ta stmt'scope "class Ethiopia implements Q<T> { void drip(Coffee bean) {} }"
 -- Scope "Ethiopia" [] [Scope "drip" [Iden bean] []]
+--
+-- >>> ta stmt'scope "public class M extends A<S> implements List<S>, Nice {}"
+-- Scope "M" [] []
 stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
-  skip (generic *> jump) -- generic
-  i <-
-    ((string "class" <|> string "interface") *> gap *> iden'typ) -- class/interface
-      <|> ((typ'gap *> iden) <|> iden'typ) -- method
-  skip (generic *> jump) -- generic
-  a <- args'decl False <|> nil -- type-iden pairs in argument declaration
-  skipMany (choice [alphaNum, oneOf ",<>()", space]) -- throws/extends/implements
-  Scope i a <$> block
+  ( do
+      i <- (string "class" <|> string "interface") *> gap *> iden'typ -- name
+      g <- (generic <|> nil) <* jump -- generic
+      skipMany
+        ( (symbol "extends" <|> symbol "implements")
+            *> sepBy (symbol ",") (typ <* jump)
+        ) -- extends/implements
+      Scope (i ++ g) mempty <$> block
+    ) -- class/interface
+    <|> ( do
+            skip (generic *> jump) -- generic
+            i <- (typ'gap *> iden) <|> iden'typ -- method
+            a <- args'decl False -- type-iden pairs in argument declaration
+            skip (symbol "throws" *> sepBy (symbol ",") (iden'typ <* jump)) -- throws
+            Scope i a <$> block
+        ) -- method
 
 -- | Abstract method statement
 --
