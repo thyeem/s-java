@@ -80,6 +80,37 @@ braces = braces' jump
 squares :: Stream s => S s a -> S s a
 squares = squares' jump
 
+-- | reorganize back to original-structured string form
+reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
+reorg bra ket sep args = pure $ bra ++ intercalate sep args ++ ket
+{-# INLINE reorg #-}
+
+-- | identifier
+--
+-- >>> ta iden "_c0ffee"
+-- "_c0ffee"
+iden :: Stream s => S s String
+iden = identifier' javaDef
+
+-- | identifier for type
+--
+-- >>> ta iden'typ "int"
+-- "int"
+iden'typ :: Stream s => S s String
+iden'typ =
+  choice
+    ( string
+        <$> ["boolean", "byte", "char", "short", "int", "long", "float", "double"]
+    )
+    <|> (sepBy1 (symbol ".") iden >>= reorg "" "" ".")
+
+-- | field
+--
+-- >>> ta field "$c0ffee"
+-- "$c0ffee"
+field :: Stream s => S s String
+field = liftA2 (:) (alpha <|> oneOf "_$") (many $ alphaNum <|> oneOf "_$")
+
 -- | modifier
 modifier :: Stream s => S s String
 modifier =
@@ -136,8 +167,14 @@ generic = basic <|> ext
   angles = between (symbol "<") (string ">")
   ws = skip spaces
   basic =
-    angles (sepBy (symbol ",") ((iden'typ <* ws) <|> symbol "?"))
-      >>= \p -> pure $ "<" ++ intercalate "," p ++ ">"
+    angles
+      ( sepBy
+          (symbol ",")
+          ( (iden'typ <* ws >>= \i -> many basic >>= reorg i "" "") -- <T,<U>>
+              <|> symbol "?" -- <?>
+          )
+      )
+      >>= reorg "<" ">" ","
   ext = angles $ do
     i <- (iden'typ <|> symbol "?") <* ws
     e <- symbol "extends" <|> symbol "super"
@@ -147,48 +184,47 @@ generic = basic <|> ext
 
 -- | annotations
 --
--- >>> ta anno "@atCafe string c0ffee"
+-- >>> ta anno "@atCafe"
 -- "@atCafe"
 --
--- >>> ta anno "@SuppressWarnings(bool=false) public"
+-- >>> ta anno "@SuppressWarnings(bool=false)"
 -- "@SuppressWarnings(bool=false)"
+--
+-- >>> ta anno "@Schedules(days={MONDAY, FRIDAY}, hour=15)"
+-- "@Schedules(days={MONDAY, FRIDAY},hour=15)"
+--
+-- >>> ta anno "@Outer(inner=@Inner(name=sofia, age=9), cat=@maria)"
+-- "@Outer(inner=@Inner(name=sofia, age=9),cat=@maria)"
 anno :: Stream s => S s String
 anno = do
   c <- char '@' -- sigil
-  n <- iden'typ -- name of annotation
-  a <- -- optional args (...)
+  k <- key -- name of annotation
+  a <- -- optional args (..)
     option
       mempty
-      ( parens (many $ stringLit' javaDef <|> some (noneOf ")\""))
-          >>= \p -> pure $ "(" ++ concat p ++ ")"
+      ( parens (sepBy' (symbol ",") (choice [arr, pair, lit, no'lit]))
+          >>= reorg "(" ")" ","
       )
-  pure $ c : n ++ a
-
--- | field
---
--- >>> ta field "$c0ffee"
--- "$c0ffee"
-field :: Stream s => S s String
-field = liftA2 (:) (alpha <|> oneOf "_$") (many $ alphaNum <|> oneOf "_$")
-
--- | identifier
---
--- >>> ta iden "_c0ffee"
--- "_c0ffee"
-iden :: Stream s => S s String
-iden = identifier' javaDef
-
--- | identifier for type
---
--- >>> ta iden'typ "int"
--- "int"
-iden'typ :: Stream s => S s String
-iden'typ =
-  choice
-    ( string
-        <$> ["boolean", "byte", "char", "short", "int", "long", "float", "double"]
-    ) -- primitive types
-    <|> iden
+  pure $ (c : k) ++ a -- @anno(..)
+ where
+  ignore = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef]
+  parens = parens' ignore -- (..)
+  braces = braces' ignore -- {..}
+  symbol = symbol' ignore
+  key = sepBy1 (symbol ".") (field <* ignore) >>= reorg "" "" "." -- key=
+  val = choice [anno, arr, lit, no'lit] -- @anno, {..}, "key", val,..
+  no'lit = many (noneOf ")}") -- any, 123,..
+  lit =
+    ( sepBy1 (symbol "+") (stringLit' javaDef <* ignore)
+        >>= reorg "" "" "+" -- string literal: "str" + "ing"
+    )
+      <|> ((: []) <$> charLit' javaDef) -- char literal: 'c'
+  pair =
+    field <* ignore >>= \k ->
+      symbol "=" >>= \o -> ((k ++ o) ++) <$> val -- key=val
+  arr =
+    braces (sepBy' (symbol ",") (choice [anno, lit, no'lit]))
+      >>= reorg "{" "}" "," -- {@anno, val,}
 
 data Identifier = Identifier Source !String
 
@@ -362,7 +398,7 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 expr'new :: Stream s => S s Jexp
 expr'new = token $ do
   t <- string "new" *> gap *> typ
-  a <- choice [args'expr, args'arr, some (squares jexp)]
+  a <- choice [args'expr, args'arr, some (squares (jexp <|> string "" $> E))]
   New t a <$> option ST (Scope t [] <$> braces jstmts)
 
 -- | Lambda expression
@@ -371,7 +407,7 @@ expr'lam :: Stream s => S s Jexp
 expr'lam = token $ do
   a <- args'decl True <|> ((: []) <$> expr'iden) -- (args) or value
   _ <- symbol "->"
-  Lambda a <$> ((Scope "\\" a <$> block) <|> stmt'expr)
+  Lambda a <$> ((Scope "\\" a <$> braces jstmts) <|> stmt'expr)
 
 -- | Variable expression
 expr'iden :: Stream s => S s Jexp
@@ -384,7 +420,7 @@ expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 expr'call :: Stream s => S s Jexp
 expr'call =
   token $
-    skip (generic *> jump) *> expr'iden >>= \i -> Call i <$> args'expr
+    skip generic *> jump *> expr'iden >>= \i -> Call i <$> args'expr
 
 -- | field/method chaining
 --
@@ -439,9 +475,9 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
   pair = typ'gap *> var
   var = Iden <$> (loc iden <* skipMany (symbol "[]"))
   arg =
-    skip (string "final" *> gap)
-      *> (if optType then pair <|> var else pair)
-      <* jump
+    token $
+      skip (string "final" *> gap)
+        *> if optType then pair <|> var else pair
 
 -- | Parse arguments of expression
 --
@@ -495,7 +531,11 @@ jstmt =
 
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
-jstmts = many jstmt >>= \x -> if not (null x) then pure x else many jstmt'simple
+jstmts =
+  many jstmt >>= \x ->
+    if not (null x)
+      then pure x
+      else many jstmt'simple
 
 -- | Common block parser
 block :: Stream s => S s [Jstmt]
