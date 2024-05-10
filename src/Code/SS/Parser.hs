@@ -31,7 +31,6 @@ import Text.S
   , many
   , noneOf
   , oneOf
-  , option
   , parens'
   , sepBy
   , sepBy'
@@ -79,6 +78,10 @@ braces = braces' jump
 -- | Parser for [ .. ]
 squares :: Stream s => S s a -> S s a
 squares = squares' jump
+
+-- | Parser for nothing
+nil :: Stream s => S s [a]
+nil = pure mempty
 
 -- | reorganize back to original-structured string form
 reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
@@ -141,18 +144,15 @@ typ =
   string "void"
     <|> ( do
             i <- iden'typ -- type name
-            g <- option mempty (jump *> generic) -- generic <T>
-            l <- option mempty (some $ jump *> string "[]") -- ndarry []
-            v <- option mempty (jump *> string "...") -- varargs ...
+            g <- (jump *> generic) <|> nil -- generic <T>
+            l <- some (jump *> string "[]") <|> nil -- ndarry []
+            v <- (jump *> string "...") <|> nil -- varargs ...
             pure $ concat [i, g, concat l, v]
         )
 
 -- | spacing around type parser, 'typ'
 typ'gap :: Stream s => S s String
-typ'gap = do
-  t <- typ
-  if not (null t) && last t `elem` ">]." then jump else gap
-  pure t
+typ'gap = typ >>= \t -> if last t `elem` ">]." then jump $> t else gap $> t
 
 -- | generic
 --
@@ -191,20 +191,20 @@ generic = basic <|> ext
 -- "@SuppressWarnings(bool=false)"
 --
 -- >>> ta anno "@Schedules(days={MONDAY, FRIDAY}, hour=15)"
--- "@Schedules(days={MONDAY, FRIDAY},hour=15)"
+-- "@Schedules(days={MONDAY,FRIDAY},hour=15)"
 --
 -- >>> ta anno "@Outer(inner=@Inner(name=sofia, age=9), cat=@maria)"
--- "@Outer(inner=@Inner(name=sofia, age=9),cat=@maria)"
+-- "@Outer(inner=@Inner(name=sofia,age=9),cat=@maria)"
 anno :: Stream s => S s String
 anno = do
   c <- char '@' -- sigil
   k <- key -- name of annotation
   a <- -- optional args (..)
-    option
-      mempty
-      ( parens (sepBy' (symbol ",") (choice [arr, pair, lit, no'lit]))
+    parens
+      ( sepBy' (symbol ",") (choice [arr, pair, lit, no'lit])
           >>= reorg "(" ")" ","
       )
+      <|> nil
   pure $ (c : k) ++ a -- @anno(..)
  where
   ignore = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef]
@@ -213,7 +213,7 @@ anno = do
   symbol = symbol' ignore
   key = sepBy1 (symbol ".") (field <* ignore) >>= reorg "" "" "." -- key=
   val = choice [anno, arr, lit, no'lit] -- @anno, {..}, "key", val,..
-  no'lit = many (noneOf ")}") -- any, 123,..
+  no'lit = some (noneOf ",)}") -- any, 123,..
   lit =
     ( sepBy1 (symbol "+") (stringLit' javaDef <* ignore)
         >>= reorg "" "" "+" -- string literal: "str" + "ing"
@@ -397,9 +397,9 @@ expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 -- New "Coffee" [] (Scope "Coffee" [] [Scope "Ethiopia" [] []])
 expr'new :: Stream s => S s Jexp
 expr'new = token $ do
-  t <- string "new" *> gap *> typ
+  t <- string "new" *> gap *> typ <* jump
   a <- choice [args'expr, args'arr, some (squares (jexp <|> string "" $> E))]
-  New t a <$> option ST (Scope t [] <$> braces jstmts)
+  New t a <$> ((Scope t [] <$> braces jstmts) <|> pure ST)
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
@@ -523,11 +523,7 @@ instance Pretty Jstmt
 
 -- | Java statement parser
 jstmt :: Stream s => S s Jstmt
-jstmt =
-  between
-    jump
-    jump
-    (jstmt'block <|> (jstmt'simple <* symbol ";"))
+jstmt = jstmt'block <|> (jstmt'simple <* symbol ";")
 
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
@@ -544,31 +540,39 @@ block = braces jstmts <* skip (symbol ";")
 -- | Java statement that can have a curly-braced block
 jstmt'block :: Stream s => S s Jstmt
 jstmt'block =
-  choice
-    [ stmt'if
-    , stmt'for
-    , stmt'while
-    , stmt'switch
-    , stmt'try
-    , stmt'sync
-    , stmt'bare
-    , stmt'enum
-    , stmt'scope
-    ]
+  between
+    jump
+    jump
+    ( choice
+        [ stmt'if
+        , stmt'for
+        , stmt'while
+        , stmt'switch
+        , stmt'try
+        , stmt'sync
+        , stmt'bare
+        , stmt'enum
+        , stmt'scope
+        ]
+    )
 
 -- | Java simple statement that requires semicolon at the end
 jstmt'simple :: Stream s => S s Jstmt
 jstmt'simple =
-  choice
-    [ stmt'pkg
-    , stmt'import
-    , stmt'abs
-    , stmt'ret
-    , stmt'set
-    , stmt'expr
-    , stmt'flow
-    , stmt'throw
-    ]
+  between
+    jump
+    jump
+    ( choice
+        [ stmt'pkg
+        , stmt'import
+        , stmt'abs
+        , stmt'ret
+        , stmt'set
+        , stmt'expr
+        , stmt'flow
+        , stmt'throw
+        ]
+    )
 
 -- | Parse either a scoped brace block or Java's single statement
 --
@@ -613,7 +617,7 @@ stmt'scope = do
     ((string "class" <|> string "interface") *> gap *> iden'typ) -- class/interface
       <|> ((typ'gap *> iden) <|> iden'typ) -- method
   skip (generic *> jump) -- generic
-  a <- option [] (args'decl False) -- type-iden pairs in argument declaration
+  a <- args'decl False <|> nil -- type-iden pairs in argument declaration
   skipMany (choice [alphaNum, oneOf ",<>()", space]) -- throws/extends/implements
   Scope i a <$> block
 
@@ -745,7 +749,7 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- symbol "try" *> option [] (parens $ many stmt'set) -- try (src)
+    a <- symbol "try" *> (parens (many stmt'set) <|> nil) -- try (src)
     b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
@@ -755,7 +759,7 @@ stmt'try = do
           (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
     Catch cond' <$> block'or'single -- catch {..}
   final' <- -- finally {..}
-    option [] ((: []) . Catch E <$> (symbol "finally" *> block'or'single))
+    ((: []) . Catch E <$> (symbol "finally" *> block'or'single)) <|> nil
   pure $ Try try' (catch' ++ final')
 
 -- | switch statement
@@ -793,7 +797,7 @@ stmt'if = do
     elif'cond <- symbol "else if" *> parens jexp -- else if (cond)
     Else elif'cond <$> block'or'single -- {..} or j-stmt;
   else' <-
-    option [] ((: []) . Else E <$> (symbol "else" *> block'or'single)) -- else
+    ((: []) . Else E <$> (symbol "else" *> block'or'single)) <|> nil -- else
   pure $ If if'cond if' (elif' ++ else')
 
 -- | for-statement

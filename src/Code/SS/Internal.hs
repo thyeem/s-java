@@ -25,4 +25,27 @@ import Data.String.Here
 ff :: String
 ff =
   [here|
+//        if (args.length > 0 && args[0].equals(EXIT_AFTER_PAINT)) {
+//            exitAfterFirstPaint = true;
+//        }
+    SwingUtilities.invokeAndWait(new Runnable() { return 3; }, 3);
+
+//        new Runnable() {
+//
+//            public void run() {
+//                JFrame frame = new JFrame();
+//                frame.setTitle(resources.getString("Title"));
+//                frame.setBackground(Color.lightGray);
+//                frame.getContentPane().setLayout(new BorderLayout());
+//                Notepad notepad = new Notepad();
+//                frame.getContentPane().add("Center", notepad);
+//                frame.setJMenuBar(notepad.createMenubar());
+//                frame.addWindowListener(new AppCloser());
+//                frame.pack();
+//                frame.setSize(500, 600);
+//                frame.setVisible(true);
+//            }
+//      }
+//    );
+
 |]
