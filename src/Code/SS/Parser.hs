@@ -237,7 +237,7 @@ data Jexp
   | Float !Double -- primitive float
   | Char !String -- char literal
   | Str !String -- string literal
-  | Iden Identifier -- identifier
+  | Iden !Identifier -- identifier
   | Chain [Jexp] -- field/method/reference chain
   | Array [Jexp] -- array initialization
   | Index Jexp [Jexp] -- array access
