@@ -757,7 +757,9 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 stmt'try :: Stream s => S s Jstmt
 stmt'try = do
   try' <- do
-    a <- symbol "try" *> (parens (many stmt'set) <|> nil) -- try (src)
+    a <-
+      symbol "try"
+        *> (parens (sepBy' (symbol ";") stmt'set) <|> nil) -- try (src)
     b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do

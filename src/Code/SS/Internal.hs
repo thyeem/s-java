@@ -24,4 +24,7 @@ import Data.String.Here
 
 ff :: String
 ff =
-  [here| |]
+  [here|
+        try (final OutputStream os = new BufferedOutputStream(new FileOutputStream(outFileName));) {}
+
+|]
