@@ -82,11 +82,6 @@ squares = squares' jump
 nil :: Stream s => S s [a]
 nil = pure mempty
 
--- | reorganize back to original-structured string form
-reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
-reorg bra ket sep args = pure $ bra ++ intercalate sep args ++ ket
-{-# INLINE reorg #-}
-
 -- | identifier
 --
 -- >>> ta iden "_c0ffee"
@@ -220,14 +215,19 @@ anno = do
     braces (sepBy' (symbol ",") (choice [anno, lit, no'lit]))
       >>= reorg "{" "}" "," -- {@anno, val,}
 
+-- | locator: get source location where parsing begins
+loc :: Stream s => S s String -> S s Identifier
+loc p = get'source >>= \src -> Identifier src <$> p
+
+-- | reorganize back to original-structured string form
+reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
+reorg bra ket sep args = pure $ bra ++ intercalate sep args ++ ket
+{-# INLINE reorg #-}
+
 data Identifier = Identifier Source !String
 
 instance Show Identifier where
   show (Identifier _ x) = x
-
--- | locator: get source location where parsing begins
-loc :: Stream s => S s String -> S s Identifier
-loc p = get'source >>= \src -> Identifier src <$> p
 
 -- | Definition of Java expression
 data Jexp
@@ -254,6 +254,34 @@ data Jexp
   deriving (Show)
 
 instance Pretty Jexp
+
+-- | Definition of Java statement
+data Jstmt
+  = Package !String -- package statement
+  | Import !String -- import statement
+  | Abstract Jexp [Jexp] -- abstract method statement
+  | Sets [Jstmt] -- multiple decl/assign statement, [Set]
+  | Set !String Jexp Jexp -- decl/assign statement
+  | Return Jexp -- return statement
+  | Throw Jexp -- throw statement
+  | Flow !String -- flow control statement
+  | Expr Jexp -- expression statement
+  | Scope !String [Jexp] [Jstmt] -- new scope
+  | If Jexp Jstmt [Jstmt] -- if-statement
+  | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
+  | For Jstmt -- for-statement
+  | While Jexp Jstmt -- while-statement
+  | Do Jstmt Jexp -- do-while-statement
+  | Switch Jexp [Jstmt] -- switch-statement
+  | Case [Jexp] [Jstmt] -- case clause (only valid in switch-statement)
+  | Try Jstmt [Jstmt] -- try-catch-finally statement
+  | Catch Jexp Jstmt -- catch block (only valid in try-statement)
+  | Enum [Jexp] -- enum declaration statement
+  | Sync Jexp Jstmt -- synchronized statement
+  | ST -- placeholder statement
+  deriving (Show)
+
+instance Pretty Jstmt
 
 -- | Expression in Java
 jexp :: Stream s => S s Jexp
@@ -486,34 +514,6 @@ args'expr = token $ parens (sepBy (symbol ",") jexp)
 -- [Int 1,Int 2,Int 3]
 args'arr :: Stream s => S s [Jexp]
 args'arr = token $ braces (sepBy' (symbol ",") jexp)
-
--- | Definition of Java statement
-data Jstmt
-  = Package !String -- package statement
-  | Import !String -- import statement
-  | Abstract Jexp [Jexp] -- abstract method statement
-  | Sets [Jstmt] -- multiple decl/assign statement, [Set]
-  | Set !String Jexp Jexp -- decl/assign statement
-  | Return Jexp -- return statement
-  | Throw Jexp -- throw statement
-  | Flow !String -- flow control statement
-  | Expr Jexp -- expression statement
-  | Scope !String [Jexp] [Jstmt] -- new scope
-  | If Jexp Jstmt [Jstmt] -- if-statement
-  | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
-  | For Jstmt -- for-statement
-  | While Jexp Jstmt -- while-statement
-  | Do Jstmt Jexp -- do-while-statement
-  | Switch Jexp [Jstmt] -- switch-statement
-  | Case [Jexp] [Jstmt] -- case clause (only valid in switch-statement)
-  | Try Jstmt [Jstmt] -- try-catch-finally statement
-  | Catch Jexp Jstmt -- catch block (only valid in try-statement)
-  | Enum [Jexp] -- enum declaration statement
-  | Sync Jexp Jstmt -- synchronized statement
-  | ST -- placeholder statement
-  deriving (Show)
-
-instance Pretty Jstmt
 
 -- | Java statement parser
 jstmt :: Stream s => S s Jstmt

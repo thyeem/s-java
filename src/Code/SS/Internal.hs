@@ -25,6 +25,4 @@ import Data.String.Here
 ff :: String
 ff =
   [here|
-    public static void main (String argv []) {  }
-
 |]
