@@ -2,25 +2,24 @@
 
 module Code.SS.Internal where
 
+import Code.SS.Parser (Identifier)
 import qualified Data.Map as M
 import Data.String.Here
 
--- type Lvalue = String
+-- | Scope tracker
+data Tracker = Tracker
+  { t'path :: !String
+  , t'level :: !Int
+  , t'lamp :: M.Map String Tracker -- local map: key(iden-string)
+  , t'gmap :: M.Map String Tracker -- global map: key(iden-string)
+  , t'violations :: [Violation] -- List of violations
+  }
+  deriving (Show)
 
--- data Violation = Violation
--- { v'level :: !(Int, Int) -- (cur, orig)
--- , v'loc :: !(Int, Int) -- (line, col)
--- , v'var :: !Lvalue -- variable
--- , v'path :: !String -- scope path
--- }
-
--- data Scope = Scope
--- { s'path :: !String
--- , s'level :: !Int
--- , s'lmap :: M.Map Lvalue Scope
--- , s'gmap :: M.Map Lvalue Scope
--- , s'vio :: [Violation]
--- }
+-- | Violation
+data Violation
+  = Violation (String, Identifier) (String, Identifier) -- pair of (path, iden)
+  deriving (Show)
 
 ff :: String
 ff =
