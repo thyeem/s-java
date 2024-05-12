@@ -436,14 +436,14 @@ expr'chain = token $ do
         *> (expr'call <|> (Iden <$> loc field)) -- method/field
   if null ext then pure base else pure $ Chain (base : ext)
 
--- | L-value candidate expression
+-- | L-value expression
 --
 -- >>> ta expr'lval "c0ffee.beans[]"
 -- Chain [Iden c0ffee,Iden beans]
 expr'lval :: Stream s => S s Jexp
 expr'lval =
   ( expr'idx <|> expr'iden >>= \b ->
-      many (symbol "." *> token (Iden <$> loc field))
+      many (symbol "." *> (Iden <$> loc (token field)))
         >>= \e -> if null e then pure b else pure $ Chain (b : e)
   )
     <* skipMany (symbol "[]")
@@ -467,7 +467,7 @@ args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   pair = typ'gap *> var
-  var = Iden <$> (loc iden <* skipMany (symbol "[]"))
+  var = Iden <$> (loc (token iden) <* skipMany (symbol "[]"))
   arg =
     token $
       skip (string "final" *> gap)
@@ -613,7 +613,8 @@ stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
   ( do
-      i <- (string "class" <|> string "interface") *> gap *> iden'typ -- name
+      skip (string "class" <|> string "interface") *> gap
+      i <- token iden'typ -- name
       g <- (generic <|> nil) <* jump -- generic
       skipMany
         ( (symbol "extends" <|> symbol "implements")
@@ -623,7 +624,7 @@ stmt'scope = do
     ) -- class/interface
     <|> ( do
             skip (generic *> jump) -- generic
-            i <- (typ'gap *> iden) <|> iden'typ -- method
+            i <- (typ'gap *> token iden) <|> token iden'typ -- method
             a <- args'decl False -- type-iden pairs in argument declaration
             skip (symbol "throws" *> sepBy (symbol ",") (iden'typ <* jump)) -- throws
             Scope i a <$> block
