@@ -8,7 +8,6 @@ import Text.S
   , S (..)
   , Source (..)
   , Stream
-  , alpha
   , alphaNum
   , between
   , braces'
@@ -89,24 +88,9 @@ nil = pure mempty
 iden :: Stream s => S s String
 iden = identifier' javaDef
 
--- | identifier for type
---
--- >>> ta iden'typ "int"
--- "int"
-iden'typ :: Stream s => S s String
-iden'typ =
-  choice
-    ( string
-        <$> ["boolean", "byte", "char", "short", "int", "long", "float", "double"]
-    )
-    <|> (sepBy1 (symbol ".") iden >>= reorg "" "" ".")
-
--- | field
---
--- >>> ta field "$c0ffee"
--- "$c0ffee"
-field :: Stream s => S s String
-field = liftA2 (:) (alpha <|> oneOf "_$") (many $ alphaNum <|> oneOf "_$")
+-- | identifier appended with 'ndarray'
+iden'na :: Stream s => S s String
+iden'na = liftA2 (++) (token iden) (ndarr <|> nil)
 
 -- | modifier
 modifier :: Stream s => S s String
@@ -135,13 +119,28 @@ modifier =
 -- "String..."
 typ :: Stream s => S s String
 typ =
-  string "void"
+  ( string "void" -- void
+      <|> ( choice
+              ( string
+                  <$> [ "boolean"
+                      , "byte"
+                      , "char"
+                      , "short"
+                      , "int"
+                      , "long"
+                      , "float"
+                      , "double"
+                      ]
+              )
+              >>= \i -> (i ++) <$> (ndarr <|> nil)
+          ) -- prim + ndarry: int[][]
+  )
     <|> ( do
-            i <- iden'typ -- type name
+            i <- sepBy1 (symbol ".") iden >>= reorg "" "" "." -- type name
             g <- (jump *> generic) <|> nil -- generic <T>
-            l <- some (jump *> string "[]") <|> nil -- ndarry [][]
+            l <- ndarr <|> nil -- ndarray [][]
             v <- (jump *> string "...") <|> nil -- varargs ...
-            pure $ concat [i, g, concat l, v]
+            pure $ concat [i, g, l, v]
         )
 
 -- | spacing around type parser, 'typ'
@@ -159,16 +158,16 @@ generic :: Stream s => S s String
 generic = base <|> ext
  where
   angles = between (symbol "<") (string ">")
-  ws = skip spaces
-  unit = iden'typ <* ws >>= \i -> many base >>= reorg i "" "" -- T or T<U>
+  var = token iden
+  unit = token iden'na >>= \i -> many base >>= reorg i "" "" -- T<U>
   base =
     angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <T> or <?>
       >>= reorg "<" ">" ","
   ext = angles $ do
-    i <- (iden'typ <|> symbol "?") <* ws
+    i <- var <|> symbol "?"
     e <- symbol "extends" <|> symbol "super"
-    b <- iden'typ <* ws
-    g <- base <* ws
+    b <- var
+    g <- base
     reorg "<" ">" " " [i, e, b, g]
 
 -- | annotations
@@ -200,7 +199,7 @@ anno = do
   parens = parens' ignore -- (..)
   braces = braces' ignore -- {..}
   symbol = symbol' ignore
-  key = sepBy1 (symbol ".") (field <* ignore) >>= reorg "" "" "." -- key=
+  key = sepBy1 (symbol ".") (iden <* ignore) >>= reorg "" "" "." -- key=
   val = choice [anno, arr, lit, no'lit] -- @anno, {..}, "key", val,..
   no'lit = some (noneOf ",)}") -- any, 123,..
   lit =
@@ -209,11 +208,21 @@ anno = do
     )
       <|> ((: []) <$> charLit' javaDef) -- char literal: 'c'
   pair =
-    field <* ignore >>= \k ->
+    iden <* ignore >>= \k ->
       symbol "=" >>= \o -> ((k ++ o) ++) <$> val -- key=val
   arr =
     braces (sepBy' (symbol ",") (choice [anno, lit, no'lit]))
       >>= reorg "{" "}" "," -- {@anno, val,}
+
+-- | N-dimentional array or ndarry
+--
+-- >>> ta ndarr "[\t][\n\t\n][    ]"
+-- "[][][]"
+--
+-- >>> ta ndarr "[] [ ] [ /* comment */ ]"
+-- "[][][]"
+ndarr :: Stream s => S s String
+ndarr = many (liftA2 (++) (symbol "[") (symbol "]")) >>= reorg "" "" ""
 
 -- | locator: get source location where parsing begins
 loc :: Stream s => S s String -> S s Identifier
@@ -237,16 +246,17 @@ data Jexp
   | Float !Double -- primitive float
   | Char !String -- char literal
   | Str !String -- string literal
+  | Cls !String -- class literal
   | Iden !Identifier -- identifier
-  | Chain [Jexp] -- field/method/reference chain
-  | Array [Jexp] -- array initialization
-  | Index Jexp [Jexp] -- array access
   | InstOf !String Jexp -- instanceOf
   | Cast !String Jexp -- type casting
   | New !String [Jexp] Jstmt -- new object
   | Eset Jexp Jexp -- expression-context assignment
-  | Call Jexp [Jexp] -- method invocation
   | Lambda [Jexp] Jstmt -- lambda expression
+  | Array [Jexp] -- array initialization
+  | Call Jexp [Jexp] -- method invocation
+  | Chain [Jexp] -- access/reference chain
+  | Index Jexp [Jexp] -- array access
   | Prefix !String Jexp -- prefix unary operator
   | Postfix !String Jexp -- postfix unary operator
   | Infix !String Jexp Jexp -- binary infix operator
@@ -285,9 +295,9 @@ instance Pretty Jstmt
 
 -- | Expression in Java
 jexp :: Stream s => S s Jexp
-jexp = expr atom priority
+jexp = expr term priority
  where
-  atom = factor <|> parens jexp
+  term = factor <|> parens term
   priority =
     [ [prefix "-", prefix "+", prefix "!"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]
@@ -375,6 +385,20 @@ expr'chr =
 expr'str :: Stream s => S s Jexp
 expr'str = token $ Str <$> stringLit' javaDef
 
+-- | class literal
+--
+-- >>> ta expr'cls "String[].class"
+-- Cls "String[]"
+expr'cls :: Stream s => S s Jexp
+expr'cls = token $ Cls <$> (iden'na <* symbol ".class")
+
+-- | Array access expression
+--
+-- >>> ta expr'idx "arr[i][0]"
+-- Index (Iden arr) [Iden i,Int 0]
+expr'idx :: Stream s => S s Jexp
+expr'idx = token $ (factor <|> parens factor) >>= \i -> Index i <$> some (squares jexp)
+
 -- | Instanceof expression
 --
 -- >>> ta expr'iof "name instanceof String"
@@ -383,7 +407,7 @@ expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
   i <- expr'chain
   string "instanceof" *> gap
-  o <- iden'typ
+  o <- typ
   pure $ InstOf o i
 
 -- | Type cast expression
@@ -396,13 +420,6 @@ expr'cast = token $ parens (jump *> typ <* jump) >>= \t -> Cast t <$> jexp
 -- | Array initialization expression
 expr'arr :: Stream s => S s Jexp
 expr'arr = Array <$> args'arr
-
--- | Array access expression
---
--- >>> ta expr'idx "arr[i][0]"
--- Index (Iden arr) [Iden i,Int 0]
-expr'idx :: Stream s => S s Jexp
-expr'idx = token $ expr'iden >>= \i -> Index i <$> some (squares jexp)
 
 -- | Object creation expression
 --
@@ -457,11 +474,19 @@ expr'call =
 expr'chain :: Stream s => S s Jexp
 expr'chain = token $ do
   base <-
-    choice [expr'call, expr'idx, expr'iden, expr'new, expr'cast, expr'str]
+    choice
+      [ expr'call
+      , -- , expr'idx
+        expr'cls
+      , expr'iden
+      , expr'new
+      , expr'cast
+      , expr'str
+      ]
   ext <-
     many $
       (symbol "." <|> symbol "::") -- access(.)/reference(::)
-        *> (expr'call <|> (Iden <$> loc field)) -- method/field
+        *> (expr'call <|> expr'cls <|> expr'iden) -- method/field/cls-literal
   if null ext then pure base else pure $ Chain (base : ext)
 
 -- | L-value expression
@@ -470,11 +495,9 @@ expr'chain = token $ do
 -- Chain [Iden c0ffee,Iden beans]
 expr'lval :: Stream s => S s Jexp
 expr'lval =
-  ( expr'idx <|> expr'iden >>= \b ->
-      many (symbol "." *> (Iden <$> loc (token field)))
-        >>= \e -> if null e then pure b else pure $ Chain (b : e)
-  )
-    <* skipMany (symbol "[]")
+  expr'idx <|> expr'iden >>= \b ->
+    many (symbol "." *> expr'iden) <* skip ndarr
+      >>= \e -> if null e then pure b else pure $ Chain (b : e)
 
 -- | Assign statement within expression context
 --
@@ -494,12 +517,12 @@ expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
 args'decl :: Stream s => Bool -> S s [Jexp]
 args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
-  pair = typ'gap *> var
-  var = Iden <$> (loc (token iden) <* skipMany (symbol "[]"))
+  typ'x = typ'gap *> x
+  x = Iden <$> (loc (token iden) <* skip ndarr)
   arg =
     token $
       skip (string "final" *> gap)
-        *> if optType then pair <|> var else pair
+        *> if optType then typ'x <|> x else typ'x
 
 -- | Parse arguments of expression
 --
@@ -614,7 +637,7 @@ stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
   ( do
       skip (string "class" <|> string "interface") *> gap
-      i <- token iden'typ -- name
+      i <- token iden -- name
       g <- (generic <|> nil) <* jump -- generic
       skipMany
         ( (symbol "extends" <|> symbol "implements")
@@ -624,9 +647,9 @@ stmt'scope = do
     ) -- class/interface
     <|> ( do
             skip (generic *> jump) -- generic
-            i <- (typ'gap *> token iden) <|> token iden'typ -- method
+            i <- (typ'gap *> token iden) <|> token iden -- method
             a <- args'decl False -- type-iden pairs in argument declaration
-            skip (symbol "throws" *> sepBy (symbol ",") (iden'typ <* jump)) -- throws
+            skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
             Scope i a <$> block
         ) -- method
 
@@ -637,7 +660,7 @@ stmt'scope = do
 stmt'abs :: Stream s => S s Jstmt
 stmt'abs = do
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
-  i <- typ'gap *> loc iden'typ -- Type Name
+  i <- typ'gap *> loc iden -- Type Name
   skip (generic *> jump)
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
@@ -652,7 +675,11 @@ stmt'abs = do
 stmt'enum :: Stream s => S s Jstmt
 stmt'enum = do
   skip (many $ modifier *> gap) -- modifiers
-  i <- string "enum" *> gap *> iden'typ <* jump -- enum Name
+  i <- string "enum" *> gap *> iden <* jump -- enum Name
+  skipMany
+    ( (symbol "extends" <|> symbol "implements")
+        *> sepBy (symbol ",") (typ <* jump) -- extends/implements
+    )
   Scope i []
     <$> braces
       ( do

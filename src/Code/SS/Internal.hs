@@ -24,4 +24,8 @@ data Violation
 ff :: String
 ff =
   [here|
+            if (stateNode.getCommandCall() != null && stateNode.getCommandCall()[0].equals(command)) {
+                nodes.add(stateNode);
+            }
+
 |]
