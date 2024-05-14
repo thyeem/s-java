@@ -1,7 +1,8 @@
 module Code.SS.Parser where
 
+import Control.Applicative ((<**>))
 import Data.Functor (($>))
-import Data.List (intercalate)
+import Data.List (foldl', foldl1', intercalate)
 import Text.S
   ( Operator (..)
   , Pretty (..)
@@ -246,7 +247,6 @@ data Jexp
   | Float !Double -- primitive float
   | Char !String -- char literal
   | Str !String -- string literal
-  | Cls !String -- class literal
   | Iden !Identifier -- identifier
   | InstOf !String Jexp -- instanceOf
   | Cast !String Jexp -- type casting
@@ -254,9 +254,11 @@ data Jexp
   | Eset Jexp Jexp -- expression-context assignment
   | Lambda [Jexp] Jstmt -- lambda expression
   | Array [Jexp] -- array initialization
+  | Access [Jexp] -- access expr using call/index/field
   | Call Jexp [Jexp] -- method invocation
-  | Chain [Jexp] -- access/reference chain
   | Index Jexp [Jexp] -- array access
+  | Dot Jexp Jexp -- dot field/method access
+  | Ref Jexp Jexp -- method reference
   | Prefix !String Jexp -- prefix unary operator
   | Postfix !String Jexp -- postfix unary operator
   | Infix !String Jexp Jexp -- binary infix operator
@@ -278,14 +280,14 @@ data Jstmt
   | Expr Jexp -- expression statement
   | Scope !String [Jexp] [Jstmt] -- new scope
   | If Jexp Jstmt [Jstmt] -- if-statement
-  | Else Jexp Jstmt -- else-if/else block (only valid in if-statement)
+  | Else Jexp Jstmt -- else-if/else block (only valid in 'if')
   | For Jstmt -- for-statement
   | While Jexp Jstmt -- while-statement
   | Do Jstmt Jexp -- do-while-statement
   | Switch Jexp [Jstmt] -- switch-statement
-  | Case [Jexp] [Jstmt] -- case clause (only valid in switch-statement)
+  | Case [Jexp] [Jstmt] -- case clause (only valid in 'switch')
   | Try Jstmt [Jstmt] -- try-catch-finally statement
-  | Catch Jexp Jstmt -- catch block (only valid in try-statement)
+  | Catch Jexp Jstmt -- catch block (only valid in 'try')
   | Enum [Jexp] -- enum declaration statement
   | Sync Jexp Jstmt -- synchronized statement
   | ST -- placeholder statement
@@ -297,7 +299,7 @@ instance Pretty Jstmt
 jexp :: Stream s => S s Jexp
 jexp = expr term priority
  where
-  term = factor <|> parens term
+  term = factor <|> parens jexp
   priority =
     [ [prefix "-", prefix "+", prefix "!"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]
@@ -333,15 +335,9 @@ factor = e <|> parens e
  where
   e =
     choice
-      [ expr'iof -- instanceof
-      , expr'lam -- lambda
-      --    | expr'call: method()
-      --    | expr'idx: arr[i]
-      --    | expr'iden: identifier
-      --    | expr'new: new object
-      --    | expr'cast: (type) expr
-      --    | expr'str: "string"
-      , expr'chain -- join above with '.' (access op) and ':' (method ref)
+      [ expr'lam -- lambda
+      , expr'iof -- instanceof
+      , expr'access -- access: Class::ref().call().array[i][j].name
       , expr'arr -- init array: {1,2,3}
       , expr'set -- expression set: (ch = in.read(buf,0,len))
       , expr'prim -- primitive
@@ -389,15 +385,8 @@ expr'str = token $ Str <$> stringLit' javaDef
 --
 -- >>> ta expr'cls "String[].class"
 -- Cls "String[]"
-expr'cls :: Stream s => S s Jexp
-expr'cls = token $ Cls <$> (iden'na <* symbol ".class")
-
--- | Array access expression
---
--- >>> ta expr'idx "arr[i][0]"
--- Index (Iden arr) [Iden i,Int 0]
-expr'idx :: Stream s => S s Jexp
-expr'idx = token $ (factor <|> parens factor) >>= \i -> Index i <$> some (squares jexp)
+-- expr'cls :: Stream s => S s Jexp
+-- expr'cls = token $ Cls <$> (iden'na <* symbol ".class")
 
 -- | Instanceof expression
 --
@@ -405,7 +394,7 @@ expr'idx = token $ (factor <|> parens factor) >>= \i -> Index i <$> some (square
 -- InstOf "String" (Iden name)
 expr'iof :: Stream s => S s Jexp
 expr'iof = token $ do
-  i <- expr'chain
+  i <- expr'access
   string "instanceof" *> gap
   o <- typ
   pure $ InstOf o i
@@ -452,52 +441,62 @@ expr'lam = token $ do
 expr'iden :: Stream s => S s Jexp
 expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 
--- | Method invocation expression
+-- | Access expression
 --
--- >>> ta expr'call "valueOf(2)"
--- Call (Iden valueOf) [Int 2]
-expr'call :: Stream s => S s Jexp
-expr'call =
-  token $
-    skip generic *> jump *> expr'iden >>= \i -> Call i <$> args'expr
-
--- | field/method chaining
+-- This expression parser includes:
+--   - identifier
+--   - class literal: String[].class
+--   - method call: call()
+--   - array index access: array[i][j]
+--   - field access (.)
+--   - method reference (::)
 --
--- >>> ta expr'chain "coffee.espresso(25)"
--- Chain [Iden coffee,Call (Iden espresso) [Int 25]]
+-- >>> ta expr'access "coffee.espresso(25)"
+-- Access [Iden coffee,Call (Iden espresso) [Int 25]]
 --
--- >>> ta expr'chain "coffee"
+-- >>> ta expr'access "coffee"
 -- Iden coffee
 --
--- >>> ta expr'chain "this.coffee"
--- Chain [Iden this,Iden coffee]
-expr'chain :: Stream s => S s Jexp
-expr'chain = token $ do
+-- >>> ta expr'access "this.coffee"
+-- Access [Iden this,Iden coffee]
+expr'access :: Stream s => S s Jexp
+expr'access = token $ do
   base <-
-    choice
-      [ expr'call
-      , -- , expr'idx
-        expr'cls
-      , expr'iden
-      , expr'new
-      , expr'cast
-      , expr'str
-      ]
-  ext <-
-    many $
-      (symbol "." <|> symbol "::") -- access(.)/reference(::)
-        *> (expr'call <|> expr'cls <|> expr'iden) -- method/field/cls-literal
-  if null ext then pure base else pure $ Chain (base : ext)
+    choice [expr'cast, expr'new, expr'str, access'iden]
+      <|> parens expr'access
+  ext <- many (choice [expr'dot, expr'call, expr'idx, expr'ref])
+  pure $ foldl' (\acc f -> f acc) base ext
+ where
+  access'iden = do
+    skip generic *> jump
+    token $
+      Iden
+        <$> loc (choice [iden'na, symbol "this", symbol "super", symbol "class"])
+
+-- | Extension of call expression
+expr'call :: Stream s => S s (Jexp -> Jexp)
+expr'call = flip Call <$> args'expr
+
+-- | Extension of index access expression
+expr'idx :: Stream s => S s (Jexp -> Jexp)
+expr'idx = flip Index <$> some (squares jexp)
+
+-- | Extension of dot access expression
+expr'dot :: Stream s => S s (Jexp -> Jexp)
+expr'dot = flip Dot <$> (symbol "." *> expr'access)
+
+-- | Extension of method reference expression
+expr'ref :: Stream s => S s (Jexp -> Jexp)
+expr'ref = flip Ref <$> (symbol "::" *> expr'access)
 
 -- | L-value expression
 --
 -- >>> ta expr'lval "c0ffee.beans[]"
--- Chain [Iden c0ffee,Iden beans]
+-- Access [Iden c0ffee,Iden beans]
 expr'lval :: Stream s => S s Jexp
-expr'lval =
-  expr'idx <|> expr'iden >>= \b ->
-    many (symbol "." *> expr'iden) <* skip ndarr
-      >>= \e -> if null e then pure b else pure $ Chain (b : e)
+expr'lval = (foldl1' Dot <$> sepBy1 (symbol ".") e) <* skip ndarr
+ where
+  e = (expr'iden <**> expr'idx) <|> expr'iden
 
 -- | Assign statement within expression context
 --
@@ -603,7 +602,7 @@ jstmt'simple =
 -- But this is not be used for a class/method/lambda blocks.
 --
 -- >>> ta block'or'single "{ coffee.roasted(); }"
--- Scope "" [] [Expr (Chain [Iden coffee,Call (Iden roasted) []])]
+-- Scope "" [] [Expr (Access [Iden coffee,Call (Iden roasted) []])]
 block'or'single :: Stream s => S s Jstmt
 block'or'single = (Scope mempty [] <$> block) <|> jstmt
 
@@ -731,7 +730,7 @@ stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure E))
 -- | Expression statement
 --
 -- >>> ta stmt'expr "bean.roasted()"
--- Expr (Chain [Iden bean,Call (Iden roasted) []])
+-- Expr (Access [Iden bean,Call (Iden roasted) []])
 stmt'expr :: Stream s => S s Jstmt
 stmt'expr = Expr <$> jexp
 

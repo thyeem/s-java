@@ -6,7 +6,7 @@ import java.util.Formatter;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
-// public class ComputeTransHashSHA2 {
+public class ComputeTransHashSHA2 {
 
     public static void main(String[] args) throws Exception {
         String signatureKey = "56E529FE6C63D60E545F84686096E6AA01D5E18A119F18A130F7CFB3983104216979E95D84C91BDD382AA0875264A63940A2D0AA5548F6023B4C78A9D52C18DA";
@@ -87,13 +87,13 @@ import javax.crypto.spec.SecretKeySpec;
      * @param str
      * @return byte array
      */
-    // public static byte[] hexStringToByteArray(String str) {
+    public static byte[] hexStringToByteArray(String str) {
         int len = str.length();
         byte[] data = new byte[len / 2];
-        // for (int i = 0; i < len; i += 2) {
+        for (int i = 0; i < len; i += 2) {
             data[i / 2] = (byte) ((Character.digit(str.charAt(i), 16) << 4)
                     + Character.digit(str.charAt(i+1), 16));
-        // }
+        }
         return data;
-    // }
-// }
+    }
+}
