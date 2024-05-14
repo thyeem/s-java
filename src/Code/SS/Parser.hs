@@ -469,9 +469,8 @@ expr'access = token $ do
  where
   access'iden = do
     skip generic *> jump
-    token $
-      Iden
-        <$> loc (choice [iden'na, symbol "this", symbol "super", symbol "class"])
+    token (Iden <$> loc (iden'na <|> symbol "class")) -- class literal
+      <|> expr'iden
 
 -- | Extension of call expression
 expr'call :: Stream s => S s (Jexp -> Jexp)
