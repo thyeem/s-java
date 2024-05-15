@@ -251,7 +251,6 @@ data Jexp
   | InstOf !String Jexp -- instanceOf
   | Cast !String Jexp -- type casting
   | New !String [Jexp] Jstmt -- new object
-  | Eset Jexp Jexp -- expression-context assignment
   | Lambda [Jexp] Jstmt -- lambda expression
   | Array [Jexp] -- array initialization
   | Access [Jexp] -- access expr using call/index/field
@@ -259,6 +258,8 @@ data Jexp
   | Index Jexp [Jexp] -- array access
   | Dot Jexp Jexp -- dot field/method access
   | Ref Jexp Jexp -- method reference
+  | Eset Jexp Jexp -- expr-context assignment
+  | Eswitch Jexp [Jstmt] -- expr-context switch
   | Prefix !String Jexp -- prefix unary operator
   | Postfix !String Jexp -- postfix unary operator
   | Infix !String Jexp Jexp -- binary infix operator
@@ -285,7 +286,8 @@ data Jstmt
   | While Jexp Jstmt -- while-statement
   | Do Jstmt Jexp -- do-while-statement
   | Switch Jexp [Jstmt] -- switch-statement
-  | Case [Jexp] [Jstmt] -- case clause (only valid in 'switch')
+  | Case [Jexp] [Jstmt] -- case statement (only valid in 'switch')
+  | Yield Jexp -- yield statement (only valid in 'case')
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in 'try')
   | Enum [Jexp] -- enum declaration statement
@@ -339,7 +341,8 @@ factor = e <|> parens e
       , expr'iof -- instanceof
       , expr'access -- access: Class::ref().call().array[i][j].name
       , expr'arr -- init array: {1,2,3}
-      , expr'set -- expression set: (ch = in.read(buf,0,len))
+      , expr'set -- expr-set: (ch = in.read(buf,0,len))
+      , expr'switch -- expr-switch: return switch (v) {}
       , expr'prim -- primitive
       ]
 
@@ -503,6 +506,10 @@ expr'lval = (foldl1' Dot <$> sepBy1 (symbol ".") e) <* skip ndarr
 -- Eset (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
 expr'set :: Stream s => S s Jexp
 expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
+
+-- | Switch statement within expression context (Java 12)
+expr'switch :: Stream s => S s Jexp
+expr'switch = uncurry Eswitch <$> switch
 
 -- | Parse arguments in declaration
 -- If 'optType' is set, bare-type variables are admitted.
@@ -803,7 +810,7 @@ stmt'try = do
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
 -- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
-stmt'switch = uncurry Switch <$> switch
+stmt'switch = uncurry Switch <$> switch <* skip (symbol ";")
 
 switch :: Stream s => S s (Jexp, [Jstmt])
 switch = do
@@ -819,7 +826,9 @@ switch = do
               ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [E]) -- default:
           Case v
-            <$> ( ((: []) <$> (string "yield" *> gap *> jstmt))
+            <$> ( ( (: []) . Yield
+                      <$> (string "yield" *> gap *> jexp)
+                  ) -- yield
                     <|> jstmts -- case body
                 )
       ) -- switch body
