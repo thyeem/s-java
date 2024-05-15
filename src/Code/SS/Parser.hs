@@ -724,7 +724,7 @@ stmt'set = do
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = symbol "return" *> (Return <$> (jexp <|> pure E))
+stmt'ret = string "return" *> gap *> (Return <$> (jexp <|> pure E))
 
 -- | Expression statement
 --
@@ -803,7 +803,10 @@ stmt'try = do
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
 -- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
 stmt'switch :: Stream s => S s Jstmt
-stmt'switch = do
+stmt'switch = uncurry Switch <$> switch
+
+switch :: Stream s => S s (Jexp, [Jstmt])
+switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
   b <-
     braces
@@ -815,9 +818,12 @@ stmt'switch = do
                 <* to
               ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [E]) -- default:
-          Case v <$> jstmts -- case body
+          Case v
+            <$> ( ((: []) <$> (string "yield" *> gap *> jstmt))
+                    <|> jstmts -- case body
+                )
       ) -- switch body
-  pure $ Switch e b
+  pure (e, b)
  where
   to = symbol ":" <|> symbol "->" -- Java 12+
 

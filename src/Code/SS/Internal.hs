@@ -24,4 +24,22 @@ data Violation
 ff :: String
 ff =
   [here|
+		switch (type) {
+			case DOCKER -> new ArrayList<>(this.dockerCommands.get(type));
+			case DOCKER_COMPOSE -> {
+				List<String> result = new ArrayList<>(this.dockerCommands.get(type));
+				if (this.composeFile != null) {
+					result.add("--file");
+					result.add(this.composeFile.toString());
+				}
+				result.add("--ansi");
+				result.add("never");
+				for (String profile : this.activeProfiles) {
+					result.add("--profile");
+					result.add(profile);
+				}
+				yield result;
+			}
+		};
+
 |]
