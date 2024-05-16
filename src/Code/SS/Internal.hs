@@ -24,7 +24,7 @@ data Violation
 ff :: String
 ff =
   [here|
-		return switch (type) {
+	 switch (type) {
 			case DOCKER -> new ArrayList<>(this.dockerCommands.get(type));
 			case DOCKER_COMPOSE -> {
 				List<String> result = new ArrayList<>(this.dockerCommands.get(type));
@@ -40,6 +40,6 @@ ff =
 				}
 				yield result;
 			}
-		}
+		};
                 ok + no;
 |]

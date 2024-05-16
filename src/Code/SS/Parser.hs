@@ -247,7 +247,7 @@ data Jexp
   | Float !Double -- primitive float
   | Char !String -- char literal
   | Str !String -- string literal
-  | Iden !Identifier -- identifier
+  | Iden Identifier -- identifier
   | InstOf !String Jexp -- instanceOf
   | Cast !String Jexp -- type casting
   | New !String [Jexp] Jstmt -- new object
@@ -550,10 +550,10 @@ jstmt = jstmt'block <|> (jstmt'simple <* symbol ";")
 -- | Java [statement] parser
 jstmts :: Stream s => S s [Jstmt]
 jstmts =
-  many jstmt >>= \x ->
-    if not (null x)
-      then pure x
-      else many jstmt'simple
+  many jstmt >>= \xs ->
+    if null xs
+      then sepBy' (symbol ";") jstmt'simple -- single statement
+      else pure xs -- multiple statement
 
 -- | Common block parser
 block :: Stream s => S s [Jstmt]
@@ -731,7 +731,7 @@ stmt'set = do
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Infix ":" (Infix "?" (Infix ">" (Int 10) (Int 5)) (Int 1)) (Int 0))
 stmt'ret :: Stream s => S s Jstmt
-stmt'ret = string "return" *> gap *> (Return <$> (jexp <|> pure E))
+stmt'ret = string "return" *> (Return <$> (gap *> jexp <|> pure E))
 
 -- | Expression statement
 --
