@@ -52,7 +52,6 @@ tests:
     dependencies:
       - base
       - Glob
-      - text
       - hspec
       - s
       - ss

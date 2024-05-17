@@ -159,8 +159,9 @@ generic :: Stream s => S s String
 generic = base <|> ext
  where
   angles = between (symbol "<") (string ">")
-  var = token iden
-  unit = token iden'na >>= \i -> many base >>= reorg i "" "" -- T<U>
+  var = token $ sepBy (symbol ".") iden >>= reorg "" "" "."
+  -- var = token iden
+  unit = var >>= \i -> many base >>= reorg i "" "" -- T<U>
   base =
     angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <T> or <?>
       >>= reorg "<" ">" ","
@@ -472,7 +473,14 @@ expr'access = token $ do
  where
   access'iden = do
     skip generic *> jump
-    token (Iden <$> loc (iden'na <|> symbol "class")) -- class literal
+    token
+      ( Iden
+          <$> loc
+            ( iden'na
+                <|> symbol "class" -- class literal
+                <|> symbol "new" -- constructor ref
+            )
+      )
       <|> expr'iden
 
 -- | Extension of call expression
