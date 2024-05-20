@@ -25,7 +25,7 @@ import Text.S
   , hexadecimal
   , identifier'
   , integer
-  , javaDef
+  , javaSpec
   , liftA2
   , many
   , noneOf
