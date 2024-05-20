@@ -1,6 +1,7 @@
 module ParserSpec where
 
-import Code.SS (jstmts)
+import Code.SS (Jstmt, jstmts)
+import qualified Data.Text.Lazy as TL
 import System.FilePath.Glob (glob)
 import Test.Hspec
 import Text.S
@@ -8,14 +9,14 @@ import Text.S
 spec :: Spec
 spec = do
   files <- runIO $ glob "files/*.java"
-  describe "Test java-parser with real-world files: " $ do
+  describe "Try to parse real-world Java files" $ do
     mapM_ test files
 
 test :: String -> SpecWith (Arg Expectation)
 test file = do
-  res <- runIO $ parseFile (jstmts <* eof) file
+  let p = jstmts <* eof :: S Text [Jstmt]
+  res <- runIO $ parseFile p file
   it file $ do
-    ( case res of
-        Ok {} -> pure ()
-        Err s -> expectationFailure (take 80 . stateStream $ s)
-      )
+    case res of
+      Ok {} -> pure ()
+      Err {} -> expectationFailure (TL.unpack . pretty $ res)

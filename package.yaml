@@ -44,19 +44,20 @@ executables:
       other-modules: Paths_ss
 
 tests:
-  hspec:
+  it:
     main: Spec.hs
     source-dirs: test
     ghc-options:
     - -threaded
     dependencies:
       - base
+      - text
       - Glob
       - hspec
       - s
       - ss
 
-  doctest:
+  doc:
     main: doctest.hs
     source-dirs: .
     ghc-options:

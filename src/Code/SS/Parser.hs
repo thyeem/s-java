@@ -19,8 +19,7 @@ import Text.S
   , cmtL'
   , endBy1
   , expr
-  , floatB
-  , gap'
+  , float
   , get'source
   , hexDigit
   , hexadecimal
@@ -37,6 +36,7 @@ import Text.S
   , sepBy1
   , skip
   , skipMany
+  , skipSome
   , some
   , spaces
   , squares'
@@ -56,7 +56,7 @@ jump = skipMany $ choice [spaces, cmtL' javaDef, cmtB' javaDef, anno]
 
 -- | Ensure being separated by spaces or comments afterwards
 gap :: Stream s => S s ()
-gap = gap' javaDef
+gap = skipSome $ choice [spaces, cmtL' javaDef, cmtB' javaDef, anno]
 
 -- | Parser for Java token
 token :: Stream s => S s a -> S s a
@@ -107,6 +107,7 @@ modifier =
           , "default"
           , "synchronized"
           , "transient"
+          , "strictfp"
           ]
 
 -- | type
@@ -150,27 +151,34 @@ typ'gap = typ >>= \t -> if last t `elem` ">]." then jump $> t else gap $> t
 
 -- | generic
 --
--- >>> ta generic "<T,U> c0ffee[]"
+-- >>> ta generic "<T,U>"
 -- "<T,U>"
 --
--- >>> ta generic "<E extends Comparable <E>> c0ffee[]"
--- "<E extends Comparable <E>>"
+-- >>> ta generic "<E extends Comparable<E>>"
+-- "<E extends Comparable<E>>"
+--
+-- >>> ta generic "<K, Mouse.Key<?>>"
+-- "<K,Mouse.Key<?>>"
+--
+-- >>> ta generic "<String[]<T>>"
+-- "<String[]<T>>"
+--
+-- >>> ta generic "<Class<? extends Awesome>>"
+-- "<Class<? extends Awesome>>"
 generic :: Stream s => S s String
 generic = base <|> ext
  where
   angles = between (symbol "<") (string ">")
-  var = token $ sepBy (symbol ".") iden >>= reorg "" "" "."
-  -- var = token iden
-  unit = var >>= \i -> many base >>= reorg i "" "" -- T<U>
+  var = token (sepBy1 (symbol ".") iden'na) >>= reorg "" "" "." -- SOME.V
+  unit = var >>= \i -> many (base <|> ext) >>= reorg i "" "" -- SOME.V<U>
   base =
-    angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <T> or <?>
+    angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <SOME.V<U>> or <?>
       >>= reorg "<" ">" ","
   ext = angles $ do
     i <- var <|> symbol "?"
     e <- symbol "extends" <|> symbol "super"
-    b <- var
-    g <- base
-    reorg "<" ">" " " [i, e, b, g]
+    u <- unit
+    reorg "<" ">" " " [i, e, u] -- <T extends SOME.V <T>>
 
 -- | annotations
 --
@@ -259,6 +267,7 @@ data Jexp
   | Index Jexp [Jexp] -- array access
   | Dot Jexp Jexp -- dot field/method access
   | Ref Jexp Jexp -- method reference
+  | Tern Jexp Jexp Jexp -- ternary expression
   | Eset Jexp Jexp -- expr-context assignment
   | Eswitch Jexp [Jstmt] -- expr-context switch
   | Prefix !String Jexp -- prefix unary operator
@@ -292,6 +301,7 @@ data Jstmt
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in 'try')
   | Enum [Jexp] -- enum declaration statement
+  | Assert Jexp Jexp -- assert statement
   | Sync Jexp Jstmt -- synchronized statement
   | ST -- placeholder statement
   deriving (Show)
@@ -300,9 +310,13 @@ instance Pretty Jstmt
 
 -- | Expression in Java
 jexp :: Stream s => S s Jexp
-jexp = expr term priority
+jexp = parens ternary <|> ternary <|> term
  where
-  term = factor <|> parens jexp
+  term = expr (factor <|> parens term) priority
+  ternary = Tern <$> term <*> (symbol "?" *> term) <*> (symbol ":" *> term)
+  infix' x = InfixL $ symbol x $> Infix x
+  prefix x = PrefixU $ symbol x $> Prefix x
+  postfix x = PostfixU $ symbol x $> Postfix x
   priority =
     [ [prefix "-", prefix "+", prefix "!"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]
@@ -326,11 +340,7 @@ jexp = expr term priority
       , infix' "&&"
       , infix' "||"
       ]
-    , [infix' "?", infix' ":"] -- ternary operator as bop
     ]
-  infix' x = InfixL $ symbol x $> Infix x
-  prefix x = PrefixU $ symbol x $> Prefix x
-  postfix x = PostfixU $ symbol x $> Postfix x
 
 -- | Expressions with the highest priority
 factor :: Stream s => S s Jexp
@@ -367,7 +377,7 @@ expr'int =
 
 -- | float
 expr'flt :: Stream s => S s Jexp
-expr'flt = token $ Float <$> floatB <* skip (oneOf "Ff")
+expr'flt = token $ Float <$> float <* skip (oneOf "Ff")
 
 -- | char literal
 expr'chr :: Stream s => S s Jexp
@@ -595,10 +605,12 @@ jstmt'simple =
     ( choice
         [ stmt'pkg
         , stmt'import
+        , stmt'do
         , stmt'abs
         , stmt'ret
         , stmt'set
         , stmt'expr
+        , stmt'assert
         , stmt'flow
         , stmt'throw
         ]
@@ -649,7 +661,7 @@ stmt'scope :: Stream s => S s Jstmt
 stmt'scope = do
   skip (many $ modifier *> gap) -- modifiers
   ( do
-      skip (string "class" <|> string "interface") *> gap
+      skip (choice $ string <$> ["class", "interface", "@interface"]) *> gap
       i <- token iden -- name
       g <- (generic <|> nil) <* jump -- generic
       skipMany
@@ -720,8 +732,8 @@ stmt'set :: Stream s => S s Jstmt
 stmt'set = do
   skip (many $ modifier *> gap) -- modifiers
   ( typ'gap *> sepBy1 (symbol ",") (assign <|> decl) >>= wrap
-    ) -- multiple declare/assign: type a, b=jexp,...
-    <|> assign -- multiple assign: a=b=..=jexp
+    ) -- declare/assign: type a, b=jexp,...
+    <|> assign -- assign: a=b=..=jexp
     <|> ( expr'lval >>= \i ->
             choice (symbol <$> ops) -- augmented assign operators
               >>= \op -> Set op i <$> jexp
@@ -731,8 +743,10 @@ stmt'set = do
   wrap s = if length s == 1 then pure (head s) else pure (Sets s)
   decl = flip (Set mempty) E <$> expr'lval
   assign =
-    endBy1 (symbol "=") expr'lval
-      >>= \s -> jexp >>= \e -> wrap (flip (Set "=") e <$> s)
+    ( endBy1 (symbol "=") expr'lval
+        >>= \s -> jexp >>= \e -> wrap (flip (Set "=") e <$> s)
+    ) -- multiple assign
+      <|> (expr'lval <* symbol "=" >>= \i -> Set "=" i <$> jexp) -- single assign
 
 -- | Return statement
 --
@@ -813,37 +827,6 @@ stmt'try = do
     ((: []) . Catch E <$> (symbol "finally" *> block'or'single)) <|> nil
   pure $ Try try' (catch' ++ final')
 
--- | switch statement
---
--- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
--- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
-stmt'switch :: Stream s => S s Jstmt
-stmt'switch = uncurry Switch <$> switch <* skip (symbol ";")
-
-switch :: Stream s => S s (Jexp, [Jstmt])
-switch = do
-  e <- symbol "switch" *> parens jexp -- switch (expr)
-  b <-
-    braces
-      ( some $ do
-          v <-
-            ( string "case"
-                *> gap
-                *> sepBy1 (symbol ",") (expr'lval <|> expr'prim)
-                <* to
-              ) -- case expr [,expr]:
-              <|> (symbol "default" *> to $> [E]) -- default:
-          Case v
-            <$> ( ( (: []) . Yield
-                      <$> (string "yield" *> gap *> jexp)
-                  ) -- yield
-                    <|> jstmts -- case body
-                )
-      ) -- switch body
-  pure (e, b)
- where
-  to = symbol ":" <|> symbol "->" -- Java 12+
-
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
@@ -876,23 +859,65 @@ stmt'for = do
   foreach = sepBy (symbol ":") p -- (int i : ix)
   classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
 
--- | while/do-while statement
+-- | while statement
 --
 -- >>> ta stmt'while "while (a < 5) {a++;}"
 -- While (Infix "<" (Iden a) (Int 5)) (Scope "" [] [Expr (Postfix "++" (Iden a))])
+stmt'while :: Stream s => S s Jstmt
+stmt'while =
+  symbol "while" *> parens jexp >>= \c ->
+    While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
+
+-- | do-while statement
 --
 -- >>> ta stmt'while "do {a++;} while (a < 5)"
 -- Do (Scope "" [] [Expr (Postfix "++" (Iden a))]) (Infix "<" (Iden a) (Int 5))
-stmt'while :: Stream s => S s Jstmt
-stmt'while =
-  ( symbol "while" *> parens jexp >>= \c ->
-      While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
-  )
-    <|> ( symbol "do" *> block'or'single >>= \b ->
-            (symbol "while" *> parens jexp)
-              >>= \e -> pure $ Do b e
-        ) -- do ({..} or j-stmt;) while (cond)
+stmt'do :: Stream s => S s Jstmt
+stmt'do =
+  symbol "do" *> block'or'single >>= \b ->
+    (symbol "while" *> parens jexp) >>= \e ->
+      pure $ Do b e -- do ({..} or j-stmt;) while (cond)
+
+-- | switch statement
+--
+-- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
+-- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
+stmt'switch :: Stream s => S s Jstmt
+stmt'switch = uncurry Switch <$> switch <* skip (symbol ";")
+
+switch :: Stream s => S s (Jexp, [Jstmt])
+switch = do
+  e <- symbol "switch" *> parens jexp -- switch (expr)
+  b <-
+    braces
+      ( some $ do
+          v <-
+            ( string "case"
+                *> gap
+                *> sepBy1 (symbol ",") (expr'lval <|> expr'prim)
+                <* to
+              ) -- case expr [,expr]:
+              <|> (symbol "default" *> to $> [E]) -- default:
+          Case v
+            <$> ( ( (: []) . Yield
+                      <$> (string "yield" *> gap *> jexp)
+                  ) -- yield
+                    <|> jstmts -- case body
+                )
+      ) -- switch body
+  pure (e, b)
+ where
+  to = symbol ":" <|> symbol "->" -- Java 12+
+
+-- | assert statement
+stmt'assert :: Stream s => S s Jstmt
+stmt'assert = do
+  string "assert" *> gap
+  cond <- jexp
+  Assert cond <$> ((symbol ":" *> jexp) <|> pure E)
 
 -- | synchronized statement
 stmt'sync :: Stream s => S s Jstmt
-stmt'sync = symbol "synchronized" *> parens jexp >>= \c -> Sync c <$> block'or'single
+stmt'sync =
+  symbol "synchronized" *> parens jexp >>= \c ->
+    Sync c <$> block'or'single
