@@ -23,5 +23,4 @@ data Violation
 
 ff :: String
 ff =
-  -- FIX
-  [here| (canUseMciService ? mciService : localMciService).process |]
+  [here| |]
