@@ -160,7 +160,7 @@ typ'gap = typ >>= \t -> if last t `elem` ">]." then tidy $> t else gap $> t
 -- "<T,U>"
 --
 -- >>> ta generic "<I, T extends I>"
--- "<I, T extends I>"
+-- "<I,T extends I>"
 --
 -- >>> ta generic "<E extends Comparable<E>>"
 -- "<E extends Comparable<E>>"
@@ -174,19 +174,18 @@ typ'gap = typ >>= \t -> if last t `elem` ">]." then tidy $> t else gap $> t
 -- >>> ta generic "<Class<? extends Awesome>>"
 -- "<Class<? extends Awesome>>"
 generic :: Jparser String
-generic = base <|> ext
+generic = angles (sepBy (symbol ",") (ext <|> unit)) >>= reorg "<" ">" ","
  where
-  angles = between (symbol "<") (string ">")
+  angles = between (symbol "<") (symbol ">")
   var = token (sepBy1 (symbol ".") iden'na) >>= reorg "" "" "." -- SOME.V
-  unit = var >>= \i -> many generic >>= reorg i "" "" -- SOME.V<U>
-  base =
-    angles (sepBy (symbol ",") (unit <|> symbol "?")) -- <SOME.V<U>> or <?>
-      >>= reorg "<" ">" ","
-  ext = angles $ do
+  unit =
+    symbol "?" -- ?
+      <|> (var >>= \i -> many generic >>= reorg i "" "") -- SOME.V<U>
+  ext = do
     i <- var <|> symbol "?"
     e <- symbol "extends" <|> symbol "super"
     u <- unit
-    reorg "<" ">" " " [i, e, u] -- <T extends SOME.V <T>>
+    pure $ unwords [i, e, u] -- T extends SOME.V<U>
 
 -- | annotations
 --
@@ -488,7 +487,7 @@ expr'access = token $ do
   pure $ foldl' (\acc f -> f acc) base ext
  where
   access'iden = do
-    skip generic *> tidy
+    skip generic
     token
       ( Iden
           <$> loc
@@ -672,7 +671,7 @@ stmt'scope = do
   ( do
       skip (choice $ string <$> ["class", "interface", "@interface"]) *> gap
       i <- token iden -- name
-      g <- option mempty generic <* tidy -- generic
+      g <- option mempty generic -- generic
       skipMany
         ( (symbol "extends" <|> symbol "implements")
             *> sepBy (symbol ",") (typ <* tidy)
@@ -680,7 +679,7 @@ stmt'scope = do
       Scope (i ++ g) mempty <$> block
     ) -- class/interface
     <|> ( do
-            skip (generic *> tidy) -- generic
+            skip generic -- generic
             i <- (typ'gap *> token iden) <|> token iden -- method
             a <- args'decl False -- type-iden pairs in argument declaration
             skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
@@ -701,9 +700,9 @@ stmt'abst :: Jparser Jstmt
 stmt'abst = do
   skip (many $ modifier *> gap) -- modifiers
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
-  skip (generic *> tidy) -- generic
+  skip generic
   i <- typ'gap *> loc iden -- Type Name
-  skip (generic *> tidy)
+  skip generic
   a <- args'decl False -- type-iden pairs in argument declaration
   pure $ Abstract (Iden i) a
 
