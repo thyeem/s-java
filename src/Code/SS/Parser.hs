@@ -520,7 +520,9 @@ expr'ref = flip Ref <$> (symbol "::" *> expr'access)
 -- >>> ta expr'lval "c0ffee.beans[]"
 -- Dot (Iden c0ffee) (Iden beans)
 expr'lval :: Jparser Jexp
-expr'lval = (foldl1' Dot <$> sepBy1 (symbol ".") e) <* skip ndarr
+expr'lval =
+  token $
+    (foldl1' Dot <$> sepBy1 (symbol ".") e) <* skip ndarr
  where
   e = (expr'iden <**> expr'idx) <|> expr'iden
 

@@ -23,4 +23,5 @@ data Violation
 
 ff :: String
 ff =
-  [here| |]
+  [here|
+|]
