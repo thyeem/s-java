@@ -105,6 +105,7 @@ typ'prim =
             , "long"
             , "float"
             , "double"
+            , "void"
             ]
     )
 
@@ -136,19 +137,14 @@ modifier =
 -- >>> ta typ "String... c0ffee"
 -- "String..."
 typ :: Jparser String
-typ =
-  string "void" -- void
-    <|> ( do
-            i <- -- type name
-              typ'prim
-                <|> ( sepBy1 (between tidy tidy (string ".")) iden
-                        >>= reorg "" "" "."
-                    )
-            g <- option mempty (tidy *> generic) -- generic <T>
-            l <- option mempty ndarr -- ndarray [][]
-            v <- option mempty (tidy *> string "...") -- varargs ...
-            pure $ concat [i, g, l, v]
-        )
+typ = do
+  i <- -- type name
+    typ'prim
+      <|> (sepBy1 (between tidy tidy (string ".")) iden >>= reorg "" "" ".")
+  g <- option mempty (tidy *> generic) -- generic <T>
+  l <- option mempty ndarr -- ndarray [][]
+  v <- option mempty (tidy *> string "...") -- varargs ...
+  pure $ concat [i, g, l, v]
 
 -- | spacing around type parser, 'typ'
 typ'gap :: Jparser String
@@ -538,7 +534,7 @@ args'arr = token $ braces (sepBy' (symbol ",") jexp)
 
 -- | Java statement parser
 jstmt :: Jparser Jstmt
-jstmt = jstmt'block <|> (jstmt'simple <* skip semi)
+jstmt = jstmt'block <|> (jstmt'simple <* semi)
 
 -- | Java [statement] parser
 jstmts :: Jparser [Jstmt]
@@ -671,11 +667,11 @@ stmt'abst = do
   skip (many $ modifier *> gap) -- modifiers
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
   skip generic
-  i <- typ'gap *> loc iden -- Type Name
+  i <- typ'gap *> expr'iden -- method name
   skip generic
   a <- args'decl False -- type-iden pairs in argument declaration
   skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
-  pure $ Abstract (Iden i) a
+  pure $ Abstract i a
 
 -- | Annotation element statement
 --
@@ -720,6 +716,7 @@ stmt'enum = do
           s <- jstmts
           pure $ e : s
       )
+    <* skip semi
  where
   enum'const = (token iden >>= \i -> Scope i [] <$> block) <|> stmt'expr
 
