@@ -866,8 +866,11 @@ stmt'if = do
 -- >>> ta stmt'for "for (int i: numbers) {}"
 -- For (Scope "" [] [Set "" (Iden i) E,Expr (Iden numbers)])
 --
--- >>> ta stmt'for "for (int i=0;i<5;i++) {}"
--- For (Scope "" [] [Set "=" (Iden i) (Int 0),Expr (Infix "<" (Iden i) (Int 5)),Expr (Postfix "++" (Iden i))])
+-- >>> ta stmt'for "for (int i;;) {}"
+-- For (Scope "" [] [Set "" (Iden i) E,ST,ST])
+--
+-- >>> ta stmt'for "for (;;) { infinite.run() }"
+-- For (Scope "" [] [ST,ST,ST,Expr (Dot (Iden infinite) (Call (Iden run) []))])
 stmt'for :: Jparser Jstmt
 stmt'for = do
   a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
@@ -876,7 +879,7 @@ stmt'for = do
  where
   p = stmt'set <|> stmt'expr
   foreach = sepBy (symbol ":") p -- (int i : ix)
-  classic = sepBy (symbol ";") p -- (int i=0; i<n; i++)
+  classic = sepBy (symbol ";") (p <|> (tidy $> ST)) -- (int i=0; i<n; i++)
 
 -- | while statement
 --
