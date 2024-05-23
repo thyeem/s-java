@@ -151,7 +151,11 @@ typ =
 
 -- | spacing around type parser, 'typ'
 typ'gap :: Jparser String
-typ'gap = typ >>= \t -> if last t `elem` ">]." then tidy $> t else gap $> t
+typ'gap =
+  skip (string "final" *> gap)
+    *> skip (many anno)
+    *> typ
+    >>= \t -> if last t `elem` ">]." then tidy $> t else gap $> t
 
 -- | generic
 --
@@ -515,12 +519,7 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
  where
   typ'x = typ'gap *> x
   x = Iden <$> (loc (token iden) <* skip ndarr)
-  arg =
-    token $
-      skip (many anno)
-        *> skip (string "final" *> gap)
-        *> skip (many anno)
-        *> if optType then typ'x <|> x else typ'x
+  arg = token $ skip (many anno) *> if optType then typ'x <|> x else typ'x
 
 -- | Parse arguments of expression
 --
