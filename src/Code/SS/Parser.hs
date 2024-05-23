@@ -899,8 +899,11 @@ stmt'do =
 
 -- | switch statement
 --
--- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
+-- >>> ta stmt'switch "switch (a) { case 1: break; default: 2 }"
 -- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
+--
+-- >>> ta stmt'switch "switch (e) { case Xcode x -> a; default -> b; }"
+-- Switch (Iden e) [Case [Eset (Iden x) E] [Expr (Iden a)],Case [E] [Expr (Iden b)]]
 stmt'switch :: Jparser Jstmt
 stmt'switch = uncurry Switch <$> switch <* skip semi
 
@@ -909,23 +912,18 @@ switch = do
   e <- symbol "switch" *> parens jexp -- switch (expr)
   b <-
     braces
-      ( some $ do
-          v <-
-            ( string "case"
-                *> gap
-                *> sepBy1 (symbol ",") (choice [expr'match, expr'lval, expr'prim])
-                <* to
-              ) -- case expr [,expr]:
-              <|> (symbol "default" *> to $> [E]) -- default:
-          Case v
-            <$> ( ( (: []) . Yield
-                      <$> (string "yield" *> gap *> jexp)
-                  ) -- yield
-                    <|> jstmts -- case body
-                )
+      ( some $
+          Case
+            <$> ( (string "case" *> gap *> label <* to) -- case expr [,expr]:
+                    <|> (symbol "default" *> to $> [E]) -- default:
+                ) -- case label
+            <*> ( ((: []) . Yield <$> (string "yield" *> gap *> jexp)) -- yield
+                    <|> jstmts
+                ) -- case body
       ) -- switch body
   pure (e, b)
  where
+  label = sepBy1 (symbol ",") (choice [expr'match, expr'lval, expr'prim])
   to = symbol ":" <|> symbol "->" -- Java 12+ case arrow
   expr'match = flip Eset E <$> (typ'gap *> expr'iden) -- Java 17+ pattern
 
