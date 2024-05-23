@@ -913,7 +913,7 @@ switch = do
           v <-
             ( string "case"
                 *> gap
-                *> sepBy1 (symbol ",") (expr'lval <|> expr'prim)
+                *> sepBy1 (symbol ",") (choice [expr'match, expr'lval, expr'prim])
                 <* to
               ) -- case expr [,expr]:
               <|> (symbol "default" *> to $> [E]) -- default:
@@ -926,7 +926,8 @@ switch = do
       ) -- switch body
   pure (e, b)
  where
-  to = symbol ":" <|> symbol "->" -- Java 12+
+  to = symbol ":" <|> symbol "->" -- Java 12+ case arrow
+  expr'match = flip Eset E <$> (typ'gap *> expr'iden) -- Java 17+ pattern
 
 -- | assert statement
 stmt'assert :: Jparser Jstmt
@@ -979,3 +980,8 @@ anno =
   arr = Arr <$> braces (sepBy' (symbol ",") (choice [anno, val]))
   pair = expr'iden >>= \k -> symbol "=" *> (Pair k <$> val)
   val = choice [anno, arr, Val <$> jexp]
+
+-- TODO: Java 17+ record, and sealed
+--
+-- public sealed class Shape permits Circle, Square, Rectangle {}
+-- public record Point(int x, int y) {}
