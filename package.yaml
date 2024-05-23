@@ -49,6 +49,7 @@ tests:
     source-dirs: test
     ghc-options:
     - -threaded
+    - -with-rtsopts=-N
     dependencies:
       - base
       - text
@@ -62,6 +63,7 @@ tests:
     source-dirs: .
     ghc-options:
     - -threaded
+    - -with-rtsopts=-N
     dependencies:
     - base
     - Glob

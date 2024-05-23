@@ -1,6 +1,6 @@
 module ParserSpec where
 
-import Code.SS (Jparser, Jstmt, jstmts)
+import Code.SS (jstmts, tidy)
 import qualified Data.Text.Lazy as TL
 import System.FilePath.Glob (glob)
 import Test.Hspec
@@ -14,7 +14,7 @@ spec = do
 
 test :: String -> SpecWith (Arg Expectation)
 test file = do
-  let p = jstmts <* eof :: Jparser [Jstmt]
+  let p = tidy *> jstmts <* eof
   res <- runIO $ parseFile p file
   it file $ do
     case res of

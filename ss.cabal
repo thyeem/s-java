@@ -57,7 +57,7 @@ test-suite doc
       Paths_ss
   hs-source-dirs:
       ./
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -with-rtsopts=-N
   build-depends:
       Glob
     , base
@@ -73,7 +73,7 @@ test-suite it
       Paths_ss
   hs-source-dirs:
       test
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -with-rtsopts=-N
   build-depends:
       Glob
     , base

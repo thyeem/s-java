@@ -11,6 +11,7 @@ import Text.S
   , Source (..)
   , alphaNum
   , between
+  , binary
   , char
   , choice
   , endBy1
@@ -59,7 +60,7 @@ tidy = tidy' lexer
 gap :: Jparser ()
 gap = gap' lexer
 
--- | Parser for Java token
+-- | Parser builder for Java token
 token :: Jparser a -> Jparser a
 token = token' lexer
 
@@ -94,9 +95,25 @@ stringLit = stringLit' lexer
 iden :: Jparser String
 iden = identifier' lexer
 
+-- | Java primitive types
+typ'prim :: Jparser String
+typ'prim =
+  choice
+    ( string
+        <$> [ "boolean"
+            , "byte"
+            , "char"
+            , "short"
+            , "int"
+            , "long"
+            , "float"
+            , "double"
+            ]
+    )
+
 -- | identifier appended with 'ndarray'
 iden'na :: Jparser String
-iden'na = liftA2 (++) (token iden) (option mempty ndarr)
+iden'na = liftA2 (++) (iden <|> typ'prim) (option mempty ndarr)
 
 -- | modifier
 modifier :: Jparser String
@@ -127,20 +144,7 @@ modifier =
 typ :: Jparser String
 typ =
   ( string "void" -- void
-      <|> ( choice
-              ( string
-                  <$> [ "boolean"
-                      , "byte"
-                      , "char"
-                      , "short"
-                      , "int"
-                      , "long"
-                      , "float"
-                      , "double"
-                      ]
-              )
-              >>= \i -> (i ++) <$> option mempty ndarr
-          ) -- prim + ndarry: int[][]
+      <|> liftA2 (++) typ'prim (option mempty ndarr) -- prim + ndarry: int[][]
   )
     <|> ( do
             i <- sepBy1 (symbol ".") iden >>= reorg "" "" "." -- type name
@@ -177,7 +181,7 @@ generic :: Jparser String
 generic = angles (sepBy (symbol ",") (ext <|> unit)) >>= reorg "<" ">" ","
  where
   angles = between (symbol "<") (symbol ">")
-  var = token (sepBy1 (symbol ".") iden'na) >>= reorg "" "" "." -- SOME.V
+  var = token (sepBy1 (symbol ".") (token iden'na)) >>= reorg "" "" "." -- SOME.V
   unit =
     symbol "?" -- ?
       <|> (var >>= \i -> many generic >>= reorg i "" "") -- SOME.V<U>
@@ -212,23 +216,22 @@ anno = do
   pure $ (c : k) ++ a -- @anno(..)
  where
   java = genLexer javaSpec
-  tidy = tidy' java
   parens = parens' java -- (..)
   braces = braces' java -- {..}
   symbol = symbol' java
   charLit = charLit' java
   stringLit = stringLit' java
   el = choice [anno, arr, pair, lit, no'lit] -- @, {..}, "key", val,..
-  key = sepBy1 (symbol ".") (iden <* tidy) >>= reorg "" "" "." -- key=
+  key = sepBy1 (symbol ".") (token iden) >>= reorg "" "" "." -- key=
   val = choice [anno, arr, lit, no'lit] -- @, {..}, "key", val,..
   no'lit = some (noneOf ",)}") -- any, 123,..
   lit =
-    ( sepBy1 (symbol "+") (stringLit <* tidy)
+    ( sepBy1 (symbol "+") (token stringLit)
         >>= reorg "" "" "+" -- string literal: "str" + "ing"
     )
       <|> ((: []) <$> charLit) -- char literal: 'c'
   pair =
-    iden <* tidy >>= \k ->
+    token iden >>= \k ->
       symbol "=" >>= \o -> ((k ++ o) ++) <$> val -- key=val
   arr =
     braces (sepBy' (symbol ",") (choice [anno, lit, no'lit]))
@@ -309,7 +312,7 @@ data Jstmt
   | Yield Jexp -- yield statement (only valid in 'case')
   | Try Jstmt [Jstmt] -- try-catch-finally statement
   | Catch Jexp Jstmt -- catch block (only valid in 'try')
-  | Enum [Jexp] -- enum declaration statement
+  | Enum [Jstmt] -- enum declaration statement
   | Assert Jexp Jexp -- assert statement
   | Anno Jexp Jexp -- define annotation element
   | Sync Jexp Jstmt -- synchronized statement
@@ -318,7 +321,7 @@ data Jstmt
 
 instance Pretty Jstmt
 
--- | Expression in Java
+-- | Jave expression parser
 jexp :: Jparser Jexp
 jexp = ternary <|> term
  where
@@ -328,9 +331,9 @@ jexp = ternary <|> term
   postfix x = PostfixU $ symbol x $> Postfix x
   ternary =
     term >>= \x ->
-      option x (Tern x <$> (symbol "?" *> term) <*> (symbol ":" *> term))
+      option x (Tern x <$> (symbol "?" *> jexp) <*> (symbol ":" *> jexp))
   priority =
-    [ [prefix "-", prefix "+", prefix "!"]
+    [ [prefix "-", prefix "+", prefix "!", prefix "~"]
     , [prefix "++", prefix "--", postfix "++", postfix "--"]
     , [infix' "*", infix' "/"]
     , [infix' "+", infix' "-", infix' "%"]
@@ -385,11 +388,11 @@ expr'bool = Bool <$> (symbol "true" <|> symbol "false")
 expr'int :: Jparser Jexp
 expr'int =
   token $
-    Int <$> (string "0x" *> hexadecimal <|> (integer <* skip (oneOf "Ll")))
+    Int <$> choice [hexadecimal, binary, integer] <* skip (oneOf "lLdDfF")
 
 -- | float
 expr'flt :: Jparser Jexp
-expr'flt = token $ Float <$> float <* skip (oneOf "Ff")
+expr'flt = token $ Float <$> float <* skip (oneOf "lLdDfF")
 
 -- | char literal
 expr'chr :: Jparser Jexp
@@ -423,7 +426,7 @@ expr'iof = token $ do
 -- >>> ta expr'cast "(int) floating"
 -- Cast "int" (Iden floating)
 expr'cast :: Jparser Jexp
-expr'cast = token $ parens (tidy *> typ <* tidy) >>= \t -> Cast t <$> jexp
+expr'cast = token $ parens (token typ) >>= \t -> Cast t <$> jexp
 
 -- | Array initialization expression
 expr'arr :: Jparser Jexp
@@ -444,7 +447,7 @@ expr'arr = Array <$> args'arr
 -- New "Coffee" [] (Scope "Coffee" [] [Scope "Ethiopia" [] []])
 expr'new :: Jparser Jexp
 expr'new = token $ do
-  t <- string "new" *> gap *> typ <* tidy
+  t <- string "new" *> gap *> token typ
   a <- choice [args'expr, args'arr, some (squares (jexp <|> string "" $> E))]
   New t a <$> ((Scope t [] <$> braces jstmts) <|> pure ST)
 
@@ -491,7 +494,7 @@ expr'access = token $ do
     token
       ( Iden
           <$> loc
-            ( iden'na
+            ( token iden'na
                 <|> symbol "class" -- class literal
                 <|> symbol "new" -- constructor ref
             )
@@ -674,7 +677,7 @@ stmt'scope = do
       g <- option mempty generic -- generic
       skipMany
         ( (symbol "extends" <|> symbol "implements")
-            *> sepBy (symbol ",") (typ <* tidy)
+            *> sepBy (symbol ",") (token typ)
         ) -- extends/implements
       Scope (i ++ g) mempty <$> block
     ) -- class/interface
@@ -704,6 +707,7 @@ stmt'abst = do
   i <- typ'gap *> loc iden -- Type Name
   skip generic
   a <- args'decl False -- type-iden pairs in argument declaration
+  skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
   pure $ Abstract (Iden i) a
 
 -- | Annotation element statement
@@ -735,19 +739,21 @@ stmt'anno =
 stmt'enum :: Jparser Jstmt
 stmt'enum = do
   skip (many $ modifier *> gap) -- modifiers
-  i <- string "enum" *> gap *> iden <* tidy -- enum Name
+  i <- string "enum" *> gap *> token iden -- enum Name
   skipMany
     ( (symbol "extends" <|> symbol "implements")
-        *> sepBy (symbol ",") (typ <* tidy) -- extends/implements
+        *> sepBy (symbol ",") (token typ) -- extends/implements
     )
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> sepBy' (symbol ",") jexp
+          e <- Enum <$> sepBy' (symbol ",") enum'const
           skip (symbol ";")
           s <- jstmts
           pure $ e : s
       )
+ where
+  enum'const = (token iden >>= \i -> Scope i [] <$> block) <|> stmt'expr
 
 -- | Bare-block statement
 stmt'bare :: Jparser Jstmt
