@@ -24,4 +24,16 @@ data Violation
 ff :: String
 ff =
   [here|
+//        var transform = ClassTransform.transformingMethodBodies((codeB, codeE) -> {
+            switch (codeE) {
+                case ConstantInstruction i -> {
+                    ConstantDesc val = i.constantValue();
+                    if ((val instanceof Integer) && ((Integer) val) == 13) {
+                        val = 7;
+                    }
+                    codeB.constantInstruction(i.opcode(), val);
+                }
+                default -> codeB.with(codeE);
+            }
+//        });
 |]

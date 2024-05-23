@@ -371,12 +371,18 @@ expr'str = token $ Str <$> stringLit
 --
 -- >>> ta expr'iof "name instanceof String"
 -- InstOf "String" (Iden name)
+--
+-- >>> ta expr'iof "name instanceof String s"
+-- InstOf "String" (Eset (Iden s) (Iden name))
 expr'iof :: Jparser Jexp
 expr'iof = token $ do
   i <- expr'access
   string "instanceof" *> gap
-  o <- typ
-  pure $ InstOf o i
+  ( typ'gap >>= \t ->
+      expr'iden >>= \o ->
+        pure $ InstOf t (Eset o i) -- Java 16+ pattern matching
+    )
+    <|> (typ >>= \t -> pure (InstOf t i)) -- default
 
 -- | Type cast expression
 --
@@ -537,7 +543,7 @@ jstmt = jstmt'block <|> (jstmt'simple <* skip semi)
 -- | Java [statement] parser
 jstmts :: Jparser [Jstmt]
 jstmts =
-  many jstmt >>= \xs ->
+  tidy *> many jstmt >>= \xs ->
     if null xs
       then sepBy' semi jstmt'simple -- single statement
       else pure xs -- multiple statement
