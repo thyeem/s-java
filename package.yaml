@@ -47,9 +47,6 @@ tests:
   it:
     main: Spec.hs
     source-dirs: test
-    ghc-options:
-    - -threaded
-    - -with-rtsopts=-N
     dependencies:
       - base
       - text
@@ -61,9 +58,6 @@ tests:
   doc:
     main: doctest.hs
     source-dirs: .
-    ghc-options:
-    - -threaded
-    - -with-rtsopts=-N
     dependencies:
     - base
     - Glob

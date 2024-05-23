@@ -24,7 +24,6 @@ import Text.S
   , integer
   , javaSpec
   , many
-  , noneOf
   , oneOf
   , option
   , sepBy
@@ -32,11 +31,8 @@ import Text.S
   , sepBy1
   , skip
   , skipMany
-  , skipSome
   , some
-  , spaces
   , string
-  , updateLexer
   , (<|>)
   )
 
@@ -47,16 +43,13 @@ type Jparser = S String
 
 -- | Derive Java lexical unit parser from the Java language specification
 lexer :: Lexer String a
-lexer = updateLexer (java {tidy' = skipMany skippable, gap' = skipSome skippable})
- where
-  java = genLexer javaSpec
-  skippable = choice [spaces, cmtL' java, cmtB' java, anno]
+lexer = genLexer javaSpec
 
--- | Skip whitespaces, comments, and annotations
+-- | Skip whitespaces and comments
 tidy :: Jparser ()
 tidy = tidy' lexer
 
--- | Ensure being separated by spaces or comments afterwards
+-- | Ensures being separated afterwards by whitespaces or comments
 gap :: Jparser ()
 gap = gap' lexer
 
@@ -95,6 +88,10 @@ stringLit = stringLit' lexer
 iden :: Jparser String
 iden = identifier' lexer
 
+-- | identifier optionally appended with n-dimentional 'array'
+iden'arr :: Jparser String
+iden'arr = liftA2 (++) (iden <|> typ'prim) (option mempty ndarr)
+
 -- | Java primitive types
 typ'prim :: Jparser String
 typ'prim =
@@ -110,10 +107,6 @@ typ'prim =
             , "double"
             ]
     )
-
--- | identifier appended with 'ndarray'
-iden'na :: Jparser String
-iden'na = liftA2 (++) (iden <|> typ'prim) (option mempty ndarr)
 
 -- | modifier
 modifier :: Jparser String
@@ -143,11 +136,13 @@ modifier =
 -- "String..."
 typ :: Jparser String
 typ =
-  ( string "void" -- void
-      <|> liftA2 (++) typ'prim (option mempty ndarr) -- prim + ndarry: int[][]
-  )
+  string "void" -- void
     <|> ( do
-            i <- sepBy1 (symbol ".") iden >>= reorg "" "" "." -- type name
+            i <- -- type name
+              typ'prim
+                <|> ( sepBy1 (between tidy tidy (string ".")) iden
+                        >>= reorg "" "" "."
+                    )
             g <- option mempty (tidy *> generic) -- generic <T>
             l <- option mempty ndarr -- ndarray [][]
             v <- option mempty (tidy *> string "...") -- varargs ...
@@ -181,7 +176,9 @@ generic :: Jparser String
 generic = angles (sepBy (symbol ",") (ext <|> unit)) >>= reorg "<" ">" ","
  where
   angles = between (symbol "<") (symbol ">")
-  var = token (sepBy1 (symbol ".") (token iden'na)) >>= reorg "" "" "." -- SOME.V
+  var =
+    token (skip (many anno) *> sepBy1 (symbol ".") (token iden'arr))
+      >>= reorg "" "" "." -- SOME.V
   unit =
     symbol "?" -- ?
       <|> (var >>= \i -> many generic >>= reorg i "" "") -- SOME.V<U>
@@ -190,52 +187,6 @@ generic = angles (sepBy (symbol ",") (ext <|> unit)) >>= reorg "<" ">" ","
     e <- symbol "extends" <|> symbol "super"
     u <- unit
     pure $ unwords [i, e, u] -- T extends SOME.V<U>
-
--- | annotations
---
--- >>> ta anno "@atCafe"
--- "@atCafe"
---
--- >>> ta anno "@SuppressWarnings(bool=false)"
--- "@SuppressWarnings(bool=false)"
---
--- >>> ta anno "@Schedules(days={MONDAY, FRIDAY}, hour=15)"
--- "@Schedules(days={MONDAY,FRIDAY},hour=15)"
---
--- >>> ta anno "@Outer(inner=@Inner(name=sofia, age=9), cat=@maria)"
--- "@Outer(inner=@Inner(name=sofia,age=9),cat=@maria)"
---
--- >>> ta anno "@Query(@javax.Query(name=org.hibernate, value=100))"
--- "@Query(@javax.Query(name=org.hibernate,value=100))"
-anno :: Jparser String
-anno = do
-  c <- char '@' -- sigil
-  k <- key -- name of annotation
-  a <- -- optional args (..)
-    option mempty (parens (sepBy' (symbol ",") el >>= reorg "(" ")" ","))
-  pure $ (c : k) ++ a -- @anno(..)
- where
-  java = genLexer javaSpec
-  parens = parens' java -- (..)
-  braces = braces' java -- {..}
-  symbol = symbol' java
-  charLit = charLit' java
-  stringLit = stringLit' java
-  el = choice [anno, arr, pair, lit, no'lit] -- @, {..}, "key", val,..
-  key = sepBy1 (symbol ".") (token iden) >>= reorg "" "" "." -- key=
-  val = choice [anno, arr, lit, no'lit] -- @, {..}, "key", val,..
-  no'lit = some (noneOf ",)}") -- any, 123,..
-  lit =
-    ( sepBy1 (symbol "+") (token stringLit)
-        >>= reorg "" "" "+" -- string literal: "str" + "ing"
-    )
-      <|> ((: []) <$> charLit) -- char literal: 'c'
-  pair =
-    token iden >>= \k ->
-      symbol "=" >>= \o -> ((k ++ o) ++) <$> val -- key=val
-  arr =
-    braces (sepBy' (symbol ",") (choice [anno, lit, no'lit]))
-      >>= reorg "{" "}" "," -- {@, val,}
 
 -- | N-dimentional array or ndarry
 --
@@ -247,6 +198,10 @@ anno = do
 ndarr :: Jparser String
 ndarr = many (liftA2 (++) (tidy *> symbol "[") (string "]")) >>= reorg "" "" ""
 
+-- | Java statement terminator (;)
+semi :: Jparser [String]
+semi = some (symbol ";")
+
 -- | locator: get source location where parsing begins
 loc :: Jparser String -> Jparser Identifier
 loc p = get'source >>= \src -> Identifier src <$> p
@@ -256,6 +211,7 @@ reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
 reorg bra ket sep args = pure $ bra ++ intercalate sep args ++ ket
 {-# INLINE reorg #-}
 
+-- | Java identifier with source info tagged
 data Identifier = Identifier Source !String
 
 instance Show Identifier where
@@ -279,12 +235,13 @@ data Jexp
   | Index Jexp [Jexp] -- array access
   | Dot Jexp Jexp -- dot field/method access
   | Ref Jexp Jexp -- method reference
-  | Tern Jexp Jexp Jexp -- ternary expression
-  | Eset Jexp Jexp -- expr-context assignment
-  | Eswitch Jexp [Jstmt] -- expr-context switch
   | Prefix !String Jexp -- prefix unary operator
   | Postfix !String Jexp -- postfix unary operator
   | Infix !String Jexp Jexp -- binary infix operator
+  | Tern Jexp Jexp Jexp -- ternary expression
+  | Eset Jexp Jexp -- expr-context assignment
+  | Eswitch Jexp [Jstmt] -- expr-context switch
+  | Anno Annotation -- annotation
   | E -- placeholder expression
   deriving (Show)
 
@@ -314,8 +271,8 @@ data Jstmt
   | Catch Jexp Jstmt -- catch block (only valid in 'try')
   | Enum [Jstmt] -- enum declaration statement
   | Assert Jexp Jexp -- assert statement
-  | Anno Jexp Jexp -- define annotation element
   | Sync Jexp Jstmt -- synchronized statement
+  | AnnoEl Jexp Jexp -- annotation elements declaration
   | ST -- placeholder statement
   deriving (Show)
 
@@ -494,7 +451,7 @@ expr'access = token $ do
     token
       ( Iden
           <$> loc
-            ( token iden'na
+            ( token iden'arr
                 <|> symbol "class" -- class literal
                 <|> symbol "new" -- constructor ref
             )
@@ -554,7 +511,9 @@ args'decl optType = token $ parens (sepBy (symbol ",") arg)
   x = Iden <$> (loc (token iden) <* skip ndarr)
   arg =
     token $
-      skip (string "final" *> gap)
+      skip (many anno)
+        *> skip (string "final" *> gap)
+        *> skip (many anno)
         *> if optType then typ'x <|> x else typ'x
 
 -- | Parse arguments of expression
@@ -573,19 +532,19 @@ args'arr = token $ braces (sepBy' (symbol ",") jexp)
 
 -- | Java statement parser
 jstmt :: Jparser Jstmt
-jstmt = jstmt'block <|> (jstmt'simple <* symbol ";")
+jstmt = jstmt'block <|> (jstmt'simple <* skip semi)
 
 -- | Java [statement] parser
 jstmts :: Jparser [Jstmt]
 jstmts =
   many jstmt >>= \xs ->
     if null xs
-      then sepBy' (symbol ";") jstmt'simple -- single statement
+      then sepBy' semi jstmt'simple -- single statement
       else pure xs -- multiple statement
 
 -- | Common block parser
 block :: Jparser [Jstmt]
-block = braces jstmts <* skip (symbol ";")
+block = braces jstmts <* skip semi
 
 -- | Java statement that can have a curly-braced block
 jstmt'block :: Jparser Jstmt
@@ -613,7 +572,7 @@ jstmt'simple =
     tidy
     tidy
     ( choice
-        [ stmt'pkg
+        [ stmt'package
         , stmt'import
         , stmt'do
         , stmt'anno
@@ -670,6 +629,7 @@ block'or'single = (Scope mempty [] <$> block) <|> jstmt
 -- Scope "M" [] []
 stmt'scope :: Jparser Jstmt
 stmt'scope = do
+  skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
   ( do
       skip (choice $ string <$> ["class", "interface", "@interface"]) *> gap
@@ -701,6 +661,7 @@ stmt'scope = do
 -- Abstract (Iden draw) []
 stmt'abst :: Jparser Jstmt
 stmt'abst = do
+  skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
   skip generic
@@ -713,31 +674,32 @@ stmt'abst = do
 -- | Annotation element statement
 --
 -- >>> ta stmt'anno "int intValue() default 42"
--- Anno (Iden intValue) (Int 42)
+-- AnnoEl (Iden intValue) (Int 42)
 --
 -- >>> ta stmt'anno "Class<?> classValue() default String.class"
--- Anno (Iden classValue) (Dot (Iden String) (Iden class))
+-- AnnoEl (Iden classValue) (Dot (Iden String) (Iden class))
 --
 -- >>> ta stmt'anno "Nested nested() default @Nested(42)"
--- Anno (Iden nested) E
+-- AnnoEl (Iden nested) (Anno (At (Call (Iden Nested) [Int 42]) []))
 stmt'anno :: Jparser Jstmt
 stmt'anno =
-  typ'gap *> loc iden >>= \i ->
+  typ'gap *> expr'iden >>= \i ->
     symbol "("
       *> symbol ")"
       *> string "default"
       *> gap
-      *> (Anno (Iden i) <$> option E jexp)
+      *> (AnnoEl i <$> (jexp <|> Anno <$> anno))
 
 -- | enum statement
 --
 -- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,}"
--- Scope "Color" [] [Enum [Iden RED,Iden GREEN,Iden BLUE]]
+-- Scope "Color" [] [Enum [Expr (Iden RED),Expr (Iden GREEN),Expr (Iden BLUE)]]
 --
 -- >>> ta stmt'enum "enum Color {RED, GREEN, BLUE,;}"
--- Scope "Color" [] [Enum [Iden RED,Iden GREEN,Iden BLUE]]
+-- Scope "Color" [] [Enum [Expr (Iden RED),Expr (Iden GREEN),Expr (Iden BLUE)]]
 stmt'enum :: Jparser Jstmt
 stmt'enum = do
+  skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
   i <- string "enum" *> gap *> token iden -- enum Name
   skipMany
@@ -747,8 +709,8 @@ stmt'enum = do
   Scope i []
     <$> braces
       ( do
-          e <- Enum <$> sepBy' (symbol ",") enum'const
-          skip (symbol ";")
+          e <- Enum <$> sepBy' (symbol ",") (skip (many anno) *> enum'const)
+          skip semi
           s <- jstmts
           pure $ e : s
       )
@@ -771,6 +733,7 @@ stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 -- Sets [Set "" (Iden a) E,Set "=" (Iden b) (Int 5)]
 stmt'set :: Jparser Jstmt
 stmt'set = do
+  skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
   ( typ'gap *> sepBy1 (symbol ",") (assign <|> decl) >>= wrap
     ) -- declare/assign: type a, b=jexp,...
@@ -805,22 +768,31 @@ stmt'expr = Expr <$> jexp
 
 -- | Package statement
 --
--- >>> ta stmt'pkg "package com.example.math"
+-- >>> ta stmt'package "package com.example.math"
 -- Package "com.example.math"
-stmt'pkg :: Jparser Jstmt
-stmt'pkg = Package <$> (string "package" *> gap *> many (alphaNum <|> oneOf ".*_"))
+stmt'package :: Jparser Jstmt
+stmt'package =
+  Package
+    <$> ( skip (many anno)
+            *> string "package"
+            *> gap
+            *> many (alphaNum <|> oneOf "$_.*")
+        )
 
 -- | Import statement
 --
 -- >>> ta stmt'import "import java.util.*"
 -- Import "java.util.*"
+--
+-- >>> ta stmt'import "import com.google.gson.internal.$Gson$Types"
+-- Import "com.google.gson.internal.$Gson$Types"
 stmt'import :: Jparser Jstmt
 stmt'import =
   Import
     <$> ( string "import"
             *> gap
             *> skip (string "static" *> gap)
-            *> many (alphaNum <|> oneOf ".*_")
+            *> many (alphaNum <|> oneOf "$_.*")
         )
 
 -- | Flow control statement
@@ -855,7 +827,7 @@ stmt'try = do
   try' <- do
     a <-
       symbol "try"
-        *> option mempty (parens (sepBy' (symbol ";") stmt'set)) -- try (src)
+        *> option mempty (parens (sepBy' semi stmt'set)) -- try (src)
     b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
     pure $ Scope mempty [] (a ++ b)
   catch' <- many $ do
@@ -924,7 +896,7 @@ stmt'do =
 -- >>> ta stmt'switch "switch (a) {case 1: break; default: 2}"
 -- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
 stmt'switch :: Jparser Jstmt
-stmt'switch = uncurry Switch <$> switch <* skip (symbol ";")
+stmt'switch = uncurry Switch <$> switch <* skip semi
 
 switch :: Jparser (Jexp, [Jstmt])
 switch = do
@@ -962,3 +934,42 @@ stmt'sync :: Jparser Jstmt
 stmt'sync =
   symbol "synchronized" *> parens jexp >>= \c ->
     Sync c <$> block'or'single
+
+-- | Definition of Java annotation
+data Annotation
+  = At Jexp [Annotation]
+  | Arr [Annotation]
+  | Pair Jexp Annotation
+  | Val Jexp
+  deriving (Show)
+
+instance Pretty Annotation
+
+-- | annotation
+--
+-- >>> ta anno "@atCafe"
+-- At (Iden atCafe) []
+--
+-- >>> ta anno "@warnings(bool=false)"
+-- At (Iden warnings) [Pair (Iden bool) (Val (Bool "false"))]
+--
+-- >>> ta anno "@Work(days={MON,}, hour=3)"
+-- At (Iden Work) [Pair (Iden days) (Arr [Val (Iden MON)]),Pair (Iden hour) (Val (Int 3))]
+--
+-- >>> ta anno "@Outer(inner=@Inner())"
+-- At (Iden Outer) [Pair (Iden inner) (At (Call (Iden Inner) []) [])]
+--
+-- >>> ta anno "@j.Query(key=sofia.maria)"
+-- At (Dot (Iden j) (Iden Query)) [Pair (Iden key) (Val (Dot (Iden sofia) (Iden maria)))]
+anno :: Jparser Annotation
+anno =
+  char '@' -- sigil
+    *> ( At
+          <$> expr'access -- name of annotation
+          <*> option mempty (parens (sepBy' (symbol ",") unit)) -- (..)
+       )
+ where
+  unit = choice [anno, arr, pair, val]
+  arr = Arr <$> braces (sepBy' (symbol ",") (choice [anno, val]))
+  pair = expr'iden >>= \k -> symbol "=" *> (Pair k <$> val)
+  val = choice [anno, arr, Val <$> jexp]
