@@ -123,6 +123,7 @@ modifier =
           , "synchronized"
           , "transient"
           , "strictfp"
+          , "volatile"
           ]
 
 -- | type
