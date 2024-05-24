@@ -90,7 +90,7 @@ iden = identifier' lexer
 
 -- | identifier optionally appended with n-dimentional 'array'
 iden'arr :: Jparser String
-iden'arr = liftA2 (++) (iden <|> typ'prim) (option mempty ndarr)
+iden'arr = (++) <$> (iden <|> typ'prim) <*> option mempty ndarr
 
 -- | Java primitive types
 typ'prim :: Jparser String
@@ -137,14 +137,17 @@ modifier =
 -- >>> ta typ "String... c0ffee"
 -- "String..."
 typ :: Jparser String
-typ = do
-  i <- -- type name
-    typ'prim
-      <|> (sepBy1 (between tidy tidy (string ".")) iden >>= reorg "" "" ".")
-  g <- option mempty (tidy *> generic) -- generic <T>
-  l <- option mempty ndarr -- ndarray [][]
-  v <- option mempty (tidy *> string "...") -- varargs ...
-  pure $ concat [i, g, l, v]
+typ =
+  concat
+    <$> sequence
+      [ typ'prim
+          <|> ( sepBy1 (between tidy tidy (string ".")) iden
+                  >>= reorg "" "" "."
+              ) -- type name
+      , option mempty (tidy *> generic) -- generic <T>
+      , option mempty ndarr -- ndarray [][]
+      , option mempty (tidy *> string "...") -- varargs ...
+      ]
 
 -- | spacing around type parser, 'typ'
 typ'gap :: Jparser String
@@ -197,15 +200,32 @@ generic = angles (sepBy (symbol ",") (ext <|> unit)) >>= reorg "<" ">" ","
 -- >>> ta ndarr "[] [ ] [ /* comment */ ]"
 -- "[][][]"
 ndarr :: Jparser String
-ndarr = many (liftA2 (++) (tidy *> symbol "[") (string "]")) >>= reorg "" "" ""
+ndarr =
+  many ((++) <$> (tidy *> symbol "[") <*> string "]")
+    >>= reorg "" "" ""
+
+-- | Throws clause
+throws :: Jparser String
+throws =
+  symbol "throws" *> sepBy (symbol ",") (token typ)
+    >>= reorg "" "" ","
+
+-- | Inheritance clauses
+inherits :: Jparser String
+inherits =
+  (symbol "extends" <|> symbol "implements")
+    *> sepBy (symbol ",") (token typ)
+    >>= reorg "" "" ","
 
 -- | Java statement terminator (;)
 semi :: Jparser [String]
 semi = some (symbol ";")
+{-# INLINE semi #-}
 
 -- | locator: get source location where parsing begins
 loc :: Jparser String -> Jparser Identifier
-loc p = get'source >>= \src -> Identifier src <$> p
+loc = (Identifier <$> get'source <*>)
+{-# INLINE loc #-}
 
 -- | reorganize back to original-structured string form
 reorg :: Applicative f => [a] -> [a] -> [a] -> [[a]] -> f [a]
@@ -241,7 +261,7 @@ data Jexp
   | Infix !String Jexp Jexp -- binary infix operator
   | Tern Jexp Jexp Jexp -- ternary expression
   | Eset Jexp Jexp -- expr-context assignment
-  | Eswitch Jexp [Jstmt] -- expr-context switch
+  | Eswitch Jexp Jstmt -- expr-context switch
   | Anno Annotation -- annotation
   | E -- placeholder expression
   deriving (Show)
@@ -259,18 +279,19 @@ data Jstmt
   | Throw Jexp -- throw statement
   | Flow !String -- flow control statement
   | Expr Jexp -- expression statement
-  | Scope !String [Jexp] [Jstmt] -- new scope
-  | If Jexp Jstmt [Jstmt] -- if-statement
-  | Else Jexp Jstmt -- else-if/else block (only valid in 'if')
-  | For Jstmt -- for-statement
+  | Scope !String [Jexp] [Jstmt] -- new `scope`
+  | Block [Jstmt] -- isolated block, but not `scope`
+  | If [Jstmt] Jstmt [Jstmt] -- if-statement
+  | Else [Jstmt] Jstmt -- else-if/else block (only valid in `if`)
+  | For [Jstmt] Jstmt -- for-statement
   | While Jexp Jstmt -- while-statement
   | Do Jstmt Jexp -- do-while-statement
-  | Switch Jexp [Jstmt] -- switch-statement
-  | Case [Jexp] [Jstmt] -- case statement (only valid in 'switch')
-  | Yield Jexp -- yield statement (only valid in 'case')
-  | Try Jstmt [Jstmt] -- try-catch-finally statement
-  | Catch Jexp Jstmt -- catch block (only valid in 'try')
-  | Enum [Jstmt] -- enum declaration statement
+  | Try [Jstmt] Jstmt [Jstmt] -- try-catch-finally statement
+  | Catch Jexp Jstmt -- catch block (only valid in `try`)
+  | Switch Jexp Jstmt -- switch-statement
+  | Case [Jexp] [Jstmt] -- case statement (only valid in `switch`)
+  | Yield Jexp -- yield statement (only valid in `case`)
+  | Enum [Jstmt] -- enum-constants declaration
   | Assert Jexp Jexp -- assert statement
   | Sync Jexp Jstmt -- synchronized statement
   | AnnoEl Jexp Jexp -- annotation elements declaration
@@ -284,9 +305,9 @@ jexp :: Jparser Jexp
 jexp = ternary <|> term
  where
   term = expr (factor <|> parens term) priority
-  infix' x = InfixL $ symbol x $> Infix x
-  prefix x = PrefixU $ symbol x $> Prefix x
-  postfix x = PostfixU $ symbol x $> Postfix x
+  infix' x = InfixL (symbol x $> Infix x)
+  prefix x = PrefixU (symbol x $> Prefix x)
+  postfix x = PostfixU (symbol x $> Postfix x)
   ternary =
     term >>= \x ->
       option x (Tern x <$> (symbol "?" *> jexp) <*> (symbol ":" *> jexp))
@@ -356,12 +377,12 @@ expr'flt = token $ Float <$> float <* skip (oneOf "lLdDfF")
 expr'chr :: Jparser Jexp
 expr'chr =
   token $
-    (Char . (: []) <$> charLit) -- Java ASCII char literal
+    (Char . pure <$> charLit) -- Java ASCII char literal
       <|> ( Char
               <$> between
                 (string "'")
                 (string "'")
-                (string "\\u" >>= \u -> (u ++) <$> some hexDigit)
+                ((++) <$> string "\\u" <*> some hexDigit)
           ) -- Java BMP Unicode escape sequence
 
 -- | string literal
@@ -377,22 +398,25 @@ expr'str = token $ Str <$> stringLit
 -- InstOf "String" (Eset (Iden s) (Iden name))
 expr'iof :: Jparser Jexp
 expr'iof = token $ do
-  i <- expr'access
-  string "instanceof" *> gap
+  i <- expr'access -- iden
+  string "instanceof" *> gap -- instanceof
   ( typ'gap >>= \t ->
       expr'iden >>= \o ->
-        pure $ InstOf t (Eset o i) -- Java 16+ pattern matching
-    )
-    <|> (typ >>= \t -> pure (InstOf t i)) -- default
+        pure $ InstOf t (Eset o i)
+    ) -- Java 16+ pattern matching: Type t
+    <|> (typ >>= \t -> pure (InstOf t i)) -- Type
 
 -- | Type cast expression
 --
 -- >>> ta expr'cast "(int) floating"
 -- Cast "int" (Iden floating)
 expr'cast :: Jparser Jexp
-expr'cast = token $ parens (token typ) >>= \t -> Cast t <$> jexp
+expr'cast = token $ Cast <$> parens (token typ) <*> jexp
 
 -- | Array initialization expression
+--
+-- >>> ta expr'arr "{1,2,3,}"
+-- Array [Int 1,Int 2,Int 3]
 expr'arr :: Jparser Jexp
 expr'arr = Array <$> args'arr
 
@@ -408,24 +432,34 @@ expr'arr = Array <$> args'arr
 -- New "byte" [Infix "/" (Iden len) (Int 2)] ST
 --
 -- >>> ta expr'new "new Coffee() { Bean Ethiopia() {} }"
--- New "Coffee" [] (Scope "Coffee" [] [Scope "Ethiopia" [] []])
+-- New "Coffee" [] (Block [Scope "Ethiopia" [] []])
 expr'new :: Jparser Jexp
-expr'new = token $ do
-  t <- string "new" *> gap *> token typ
-  a <- choice [args'expr, args'arr, some (squares (jexp <|> string "" $> E))]
-  New t a <$> ((Scope t [] <$> braces jstmts) <|> pure ST)
+expr'new =
+  token $
+    New -- new iden ((arg,), {e,}, [i][j]) {..}
+      <$> (string "new" *> gap *> token typ)
+      <*> choice
+        [ args'expr -- (expr,..)
+        , args'arr -- {expr,..}
+        , some (squares (jexp <|> string "" $> E)) -- [expr]
+        ]
+      <*> option ST (Block <$> braces jparser) -- optional {..}
 
 -- | Lambda expression
 -- Lambda in Java consists of expr-statement and block-statement
 expr'lam :: Jparser Jexp
-expr'lam = token $ do
-  a <- args'decl True <|> ((: []) <$> expr'iden) -- (args) or value
-  _ <- symbol "->"
-  Lambda a <$> ((Scope "\\" a <$> braces jstmts) <|> stmt'expr)
+expr'lam =
+  token $
+    (args'decl False <|> (pure <$> expr'iden)) >>= \a ->
+      Lambda a -- (arg,..) or val
+        <$> ( symbol "->"
+                *> ((Scope "\\" a <$> braces jparser) <|> stmt'expr)
+            ) -- {..} or j-expr
 
 -- | Variable expression
 expr'iden :: Jparser Jexp
-expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
+expr'iden =
+  token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 
 -- | Access expression
 --
@@ -446,24 +480,33 @@ expr'iden = token $ Iden <$> loc (choice [iden, symbol "this", symbol "super"])
 -- >>> ta expr'access "this.coffee"
 -- Dot (Iden this) (Iden coffee)
 expr'access :: Jparser Jexp
-expr'access = token $ do
-  base <-
-    choice [expr'cast, expr'new, expr'str, access'iden]
-      <|> parens jexp
-  ext <- many (choice [expr'dot, expr'call, expr'idx, expr'ref])
-  pure $ foldl' (\acc f -> f acc) base ext
+expr'access =
+  token $
+    foldl' (\acc f -> f acc)
+      <$> ( choice [expr'cast, expr'new, expr'str, access'iden]
+              <|> parens jexp
+          ) -- base
+      <*> many
+        ( choice
+            [ expr'dot -- (.)
+            , expr'call -- call()
+            , expr'idx -- [i][j]
+            , expr'ref -- (::)
+            ]
+        ) -- extention
  where
-  access'iden = do
+  access'iden =
     skip generic
-    token
-      ( Iden
-          <$> loc
-            ( token iden'arr
-                <|> symbol "class" -- class literal
-                <|> symbol "new" -- constructor ref
-            )
-      )
-      <|> expr'iden
+      *> ( Iden
+            <$> loc
+              ( choice
+                  [ token iden'arr -- String[]
+                  , symbol "class" -- class literal
+                  , symbol "new" -- new::method
+                  ]
+              )
+         )
+        <|> expr'iden
 
 -- | Extension of call expression
 expr'call :: Jparser (Jexp -> Jexp)
@@ -481,42 +524,47 @@ expr'dot = flip Dot <$> (symbol "." *> expr'access)
 expr'ref :: Jparser (Jexp -> Jexp)
 expr'ref = flip Ref <$> (symbol "::" *> expr'access)
 
--- | L-value expression
+-- | L-value expression that can be assigned values
 --
 -- >>> ta expr'lval "c0ffee.beans[]"
 -- Dot (Iden c0ffee) (Iden beans)
 expr'lval :: Jparser Jexp
 expr'lval =
   token $
-    (foldl1' Dot <$> sepBy1 (symbol ".") e) <* skip ndarr
- where
-  e = (expr'iden <**> expr'idx) <|> expr'iden
+    foldl1' Dot
+      <$> sepBy1 (symbol ".") ((expr'iden <**> expr'idx) <|> expr'iden)
+      <* skip ndarr
 
 -- | Assign statement within expression context
 --
 -- >>> ta expr'set "(ch = read(buf,0,3))"
 -- Eset (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
 expr'set :: Jparser Jexp
-expr'set = parens $ expr'iden >>= \i -> symbol "=" *> (Eset i <$> jexp)
+expr'set = parens $ Eset <$> expr'iden <*> (symbol "=" *> jexp)
 
 -- | Switch statement within expression context (Java 12)
 expr'switch :: Jparser Jexp
 expr'switch = uncurry Eswitch <$> switch
 
 -- | Parse arguments in declaration
--- If 'optType' is set, bare-type variables are admitted.
+-- If 'useType' is set, bare-type variables are admitted.
 --
--- >>> ta (args'decl False) "(final U out, int[][] matrix, String... str)"
+-- >>> ta (args'decl True) "(final U out, int[][] matrix, String... str)"
 -- [Iden out,Iden matrix,Iden str]
 --
--- >>> ta (args'decl True) "(out, matrix, str)"
+-- >>> ta (args'decl False) "(out, matrix, str)"
 -- [Iden out,Iden matrix,Iden str]
 args'decl :: Bool -> Jparser [Jexp]
-args'decl optType = token $ parens (sepBy (symbol ",") arg)
+args'decl useType =
+  token $
+    parens
+      ( sepBy
+          (symbol ",")
+          (skip (many anno) *> if useType then typ'x else typ'x <|> x)
+      )
  where
   typ'x = typ'gap *> x
-  x = Iden <$> (loc (token iden) <* skip ndarr)
-  arg = token $ skip (many anno) *> if optType then typ'x <|> x else typ'x
+  x = token $ Iden <$> (loc (token iden) <* skip ndarr)
 
 -- | Parse arguments of expression
 --
@@ -532,21 +580,17 @@ args'expr = token $ parens (sepBy (symbol ",") jexp)
 args'arr :: Jparser [Jexp]
 args'arr = token $ braces (sepBy' (symbol ",") jexp)
 
--- | Java statement parser
-jstmt :: Jparser Jstmt
-jstmt = jstmt'block <|> (jstmt'simple <* semi)
-
--- | Java [statement] parser
-jstmts :: Jparser [Jstmt]
-jstmts =
+-- | Java code parser: the top-level wrapper parser
+jparser :: Jparser [Jstmt]
+jparser =
   tidy *> many jstmt >>= \xs ->
     if null xs
       then sepBy' semi jstmt'simple -- single statement
       else pure xs -- multiple statement
 
--- | Common block parser
-block :: Jparser [Jstmt]
-block = braces jstmts <* skip semi
+-- | Java statement parser
+jstmt :: Jparser Jstmt
+jstmt = jstmt'block <|> (jstmt'simple <* semi)
 
 -- | Java statement that can have a curly-braced block
 jstmt'block :: Jparser Jstmt
@@ -580,6 +624,7 @@ jstmt'simple =
         , stmt'anno
         , stmt'abst
         , stmt'ret
+        , stmt'yield
         , stmt'set
         , stmt'expr
         , stmt'assert
@@ -588,7 +633,7 @@ jstmt'simple =
         ]
     )
 
--- | Parse either a scoped brace block or Java's single statement
+-- | Parse either a braces block or Java's single statement
 --
 -- This parser is for:
 --
@@ -597,12 +642,22 @@ jstmt'simple =
 -- 1. static/synchronized block
 -- 1. bare block
 --
--- But this is not be used for a class/method/lambda blocks.
+-- But these are not be used for:
+-- 1. class/interface
+-- 1. enum
+-- 1. method
+-- 1. lambda blocks.
+--
+-- They all are defined as 'Scope`, rather than 'Block'
 --
 -- >>> ta block'or'single "{ coffee.roasted(); }"
--- Scope "" [] [Expr (Dot (Iden coffee) (Call (Iden roasted) []))]
+-- Block [Expr (Dot (Iden coffee) (Call (Iden roasted) []))]
 block'or'single :: Jparser Jstmt
-block'or'single = (Scope mempty [] <$> block) <|> jstmt
+block'or'single = (Block <$> block) <|> jstmt
+
+-- | Common block parser
+block :: Jparser [Jstmt]
+block = braces jparser <* skip semi
 
 -- | New scope statment (class or method)
 --
@@ -633,23 +688,21 @@ stmt'scope :: Jparser Jstmt
 stmt'scope = do
   skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
-  ( do
-      skip (choice $ string <$> ["class", "interface", "@interface"]) *> gap
-      i <- token iden -- name
-      g <- option mempty generic -- generic
-      skipMany
-        ( (symbol "extends" <|> symbol "implements")
-            *> sepBy (symbol ",") (token typ)
-        ) -- extends/implements
-      Scope (i ++ g) mempty <$> block
-    ) -- class/interface
-    <|> ( do
-            skip generic -- generic
-            i <- (typ'gap *> token iden) <|> token iden -- method
-            a <- args'decl False -- type-iden pairs in argument declaration
-            skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
-            Scope i a <$> block
-        ) -- method
+  class'interface <|> method
+ where
+  class'interface =
+    Scope
+      <$> ( choice (string <$> ["class", "interface", "@interface"])
+              *> gap
+              *> ((++) <$> token iden <*> option mempty generic) -- name
+          )
+      <*> pure []
+      <*> (skipMany inherits *> block) -- skip extends/implements then {..}
+  method =
+    Scope
+      <$> (skip generic *> ((typ'gap *> token iden) <|> token iden)) -- name
+      <*> args'decl True -- arguments
+      <*> (skip throws *> block) -- skip throws then {..}
 
 -- | Abstract method statement
 --
@@ -666,12 +719,13 @@ stmt'abst = do
   skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
   skip (choice (string <$> ["abstract", "static", "default"]) *> gap)
-  skip generic
-  i <- typ'gap *> expr'iden -- method name
-  skip generic
-  a <- args'decl False -- type-iden pairs in argument declaration
-  skip (symbol "throws" *> sepBy (symbol ",") (token typ)) -- throws
-  pure $ Abstract i a
+  Abstract -- Type name (T t,..);
+    <$> ( skip generic
+            *> typ'gap
+            *> expr'iden -- method name
+            <* skip generic
+        )
+    <*> (args'decl True <* skip throws) -- (T t, U u,..) [throws ..]
 
 -- | Annotation element statement
 --
@@ -685,12 +739,14 @@ stmt'abst = do
 -- AnnoEl (Iden nested) (Anno (At (Call (Iden Nested) [Int 42]) []))
 stmt'anno :: Jparser Jstmt
 stmt'anno =
-  typ'gap *> expr'iden >>= \i ->
-    symbol "("
-      *> symbol ")"
-      *> string "default"
-      *> gap
-      *> (AnnoEl i <$> (jexp <|> Anno <$> anno))
+  AnnoEl -- Type name () default expr;
+    <$> (typ'gap *> expr'iden)
+    <*> ( symbol "("
+            *> symbol ")"
+            *> string "default"
+            *> gap
+            *> (jexp <|> Anno <$> anno)
+        )
 
 -- | enum statement
 --
@@ -703,26 +759,25 @@ stmt'enum :: Jparser Jstmt
 stmt'enum = do
   skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
-  i <- string "enum" *> gap *> token iden -- enum Name
-  skipMany
-    ( (symbol "extends" <|> symbol "implements")
-        *> sepBy (symbol ",") (token typ) -- extends/implements
-    )
-  Scope i []
-    <$> braces
-      ( do
-          e <- Enum <$> sepBy' (symbol ",") (skip (many anno) *> enum'const)
-          skip semi
-          s <- jstmts
-          pure $ e : s
-      )
-    <* skip semi
+  Scope -- enum name { enum-constants + others }
+    <$> (string "enum" *> gap *> token iden <* skipMany inherits) -- enum name
+    <*> pure [] -- no arguments
+    <*> ( braces
+            ( (:)
+                <$> ( Enum
+                        <$> sepBy' (symbol ",") (skip (many anno) *> enum'const)
+                        <* skip semi
+                    ) -- enum constants
+                <*> jparser -- other fields, constructor, methods
+            )
+            <* skip semi
+        ) -- enum body {..}
  where
-  enum'const = (token iden >>= \i -> Scope i [] <$> block) <|> stmt'expr
+  enum'const = (Scope <$> token iden <*> pure [] <*> block) <|> stmt'expr
 
 -- | Bare-block statement
 stmt'bare :: Jparser Jstmt
-stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
+stmt'bare = Block <$> (skip (symbol "static") *> block)
 
 -- | Assignment statement
 --
@@ -734,33 +789,38 @@ stmt'bare = skip (symbol "static") *> (Scope mempty [] <$> block)
 --
 -- >>> ta stmt'set "int a, b=5"
 -- Sets [Set "" (Iden a) E,Set "=" (Iden b) (Int 5)]
+--
+-- >>> ta stmt'set "a=b=1"
+-- Sets [Set "=" (Iden a) (Int 1),Set "=" (Iden b) (Int 1)]
 stmt'set :: Jparser Jstmt
 stmt'set = do
   skip (many anno) -- annotations
   skip (many $ modifier *> gap) -- modifiers
-  ( typ'gap *> sepBy1 (symbol ",") (assign <|> decl) >>= wrap
-    ) -- declare/assign: type a, b=jexp,...
-    <|> assign -- assign: a=b=..=jexp
-    <|> ( expr'lval >>= \i ->
-            choice (symbol <$> ops) -- augmented assign operators
-              >>= \op -> Set op i <$> jexp
-        ) -- aug-assign: a+=jexp; a-=jexp; ...
+  choice
+    [ mixed >>= wrap -- declare/assign: Type a, b=jexp,...
+    , chain'assign >>= wrap -- chain assign: a=b=c=...=jexp
+    , assign -- single assignment: a=jexp; ...
+    , aug'assign -- aug-assign: a+=jexp; a-=jexp; ...
+    ]
  where
   ops = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
   wrap s = if length s == 1 then pure (head s) else pure (Sets s)
-  decl = flip (Set mempty) E <$> expr'lval
-  assign =
-    ( endBy1 (symbol "=") expr'lval
-        >>= \s -> jexp >>= \e -> wrap (flip (Set "=") e <$> s)
-    ) -- multiple assign
-      <|> (expr'lval <* symbol "=" >>= \i -> Set "=" i <$> jexp) -- single assign
+  mixed = typ'gap *> sepBy1 (symbol ",") (assign <|> decl)
+  decl = Set mempty <$> expr'lval <*> pure E
+  assign = Set "=" <$> (expr'lval <* symbol "=") <*> jexp
+  chain'assign =
+    endBy1 (symbol "=") expr'lval
+      <**> (fmap . flip (Set "=") <$> jexp)
+  aug'assign =
+    expr'lval >>= \i ->
+      Set <$> choice (symbol <$> ops) <*> pure i <*> jexp
 
 -- | Return statement
 --
 -- >>> ta stmt'ret "return (10 > 5) ? 1 : 0"
 -- Return (Tern (Infix ">" (Int 10) (Int 5)) (Int 1) (Int 0))
 stmt'ret :: Jparser Jstmt
-stmt'ret = string "return" *> (Return <$> (gap *> jexp <|> pure E))
+stmt'ret = Return <$> (string "return" *> (gap *> jexp <|> pure E))
 
 -- | Expression statement
 --
@@ -818,61 +878,74 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- | try-catch statement
 --
 -- >>> ta stmt'try "try {} catch (Except e) {}"
--- Try (Scope "" [] []) [Catch (Iden e) (Scope "" [] [])]
+-- Try (Block []) [Catch (Iden e) (Block [])]
 --
 -- >>> ta stmt'try "try {} finally {close();}"
--- Try (Scope "" [] []) [Catch E (Scope "" [] [Expr (Call (Iden close) [])])]
+-- Try (Block []) [Catch E (Block [Expr (Call (Iden close) [])])]
 --
 -- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Scope "" [] [Set "=" (Iden b) (New "Buffer" [] ST)]) []
+-- Try (Block [Set "=" (Iden b) (New "Buffer" [] ST)]) []
 stmt'try :: Jparser Jstmt
-stmt'try = do
-  try' <- do
-    a <-
-      symbol "try"
-        *> option mempty (parens (sepBy' semi stmt'set)) -- try (src)
-    b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
-    pure $ Scope mempty [] (a ++ b)
-  catch' <- many $ do
-    cond' <- -- catch (E1 | E2 e)
-      symbol "catch"
-        *> parens
-          (typ'gap *> skipMany (symbol "|" *> typ'gap) *> expr'iden)
-    Catch cond' <$> block'or'single -- catch {..}
-  final' <- -- finally {..}
-    option mempty ((: []) . Catch E <$> (symbol "finally" *> block'or'single))
-  pure $ Try try' (catch' ++ final')
+stmt'try =
+  Try -- try (with-resources) ({..} or j-stmt) (catch + finally)
+    <$> ( symbol "try"
+            *> option
+              mempty
+              (parens (sepBy' (symbol ";") stmt'set))
+        ) -- (with-resources)
+    <*> block'or'single -- {..} or j-stmt;
+    <*> ( (++)
+            <$> many -- (opt) multiple catch
+              ( Catch
+                  <$> ( symbol "catch"
+                          *> parens (sepBy1 (symbol "|") typ'gap *> expr'iden)
+                      ) -- catch (E1 | E2 e)
+                  <*> block'or'single --  {..} or j-stmt;
+              )
+            <*> option -- (opt) finally
+              mempty
+              (pure . Catch E <$> (symbol "finally" *> block'or'single))
+        ) -- catch + finally
 
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
--- If (Infix ">" (Iden a) (Iden b)) (Scope "" [] []) [Else E (Scope "" [] [])]
+-- If (Infix ">" (Iden a) (Iden b)) (Block []) [Else E (Block [])]
 stmt'if :: Jparser Jstmt
-stmt'if = do
-  if'cond <- symbol "if" *> parens jexp -- if (cond)
-  if' <- block'or'single -- {..} or j-stmt;
-  elif' <- many $ do
-    elif'cond <- symbol "else if" *> parens jexp -- else if (cond)
-    Else elif'cond <$> block'or'single -- {..} or j-stmt;
-  else' <-
-    option mempty ((: []) . Else E <$> (symbol "else" *> block'or'single)) -- else
-  pure $ If if'cond if' (elif' ++ else')
+stmt'if =
+  If -- if (cond) ({..} or j-stmt) ( else-if + else )
+    <$> (symbol "if" *> parens cond) -- if (cond)
+    <*> block'or'single -- if-body {..} or j-stmt;
+    <*> ( (++)
+            <$> many
+              ( Else
+                  <$> (symbol "else if" *> parens cond) -- else-if (cond)
+                  <*> block'or'single -- else-if body {..} or j-stmt;
+              ) -- (opt) multiple else-if
+            <*> option
+              mempty
+              ( pure . Else (pure ST)
+                  <$> (symbol "else" *> block'or'single)
+              ) -- (opt) else
+        ) -- else-if + else
+ where
+  cond = sepBy (symbol ";") (stmt'set <|> stmt'expr) -- Java 14+
 
 -- | for-statement
 --
 -- >>> ta stmt'for "for (int i: numbers) {}"
--- For (Scope "" [] [Set "" (Iden i) E,Expr (Iden numbers)])
+-- For (Block [Set "" (Iden i) E,Expr (Iden numbers)])
 --
 -- >>> ta stmt'for "for (int i;;) {}"
--- For (Scope "" [] [Set "" (Iden i) E,ST,ST])
+-- For (Block [Set "" (Iden i) E,ST,ST])
 --
 -- >>> ta stmt'for "for (;;) { infinite.run() }"
--- For (Scope "" [] [ST,ST,ST,Expr (Dot (Iden infinite) (Call (Iden run) []))])
+-- For (Block [ST,ST,ST,Expr (Dot (Iden infinite) (Call (Iden run) []))])
 stmt'for :: Jparser Jstmt
-stmt'for = do
-  a <- symbol "for" *> (parens classic <|> parens foreach) -- for (header)
-  b <- block <|> (: []) <$> jstmt -- {..} or j-stmt;
-  pure $ For (Scope mempty [] (a ++ b))
+stmt'for =
+  For -- for (header) ({..} or j-stmt;)
+    <$> (symbol "for" *> (parens classic <|> parens foreach)) -- (header)
+    <*> block'or'single -- {..} or j-stmt;
  where
   p = stmt'set <|> stmt'expr
   foreach = sepBy (symbol ":") p -- (int i : ix)
@@ -881,64 +954,71 @@ stmt'for = do
 -- | while statement
 --
 -- >>> ta stmt'while "while (a < 5) {a++;}"
--- While (Infix "<" (Iden a) (Int 5)) (Scope "" [] [Expr (Postfix "++" (Iden a))])
+-- While (Infix "<" (Iden a) (Int 5)) (Block [Expr (Postfix "++" (Iden a))])
 stmt'while :: Jparser Jstmt
 stmt'while =
-  symbol "while" *> parens jexp >>= \c ->
-    While c <$> block'or'single -- while (cond) ({..} or j-stmt;)
+  While -- while (cond) ({..} or j-stmt;)
+    <$> (symbol "while" *> parens jexp)
+    <*> block'or'single
 
 -- | do-while statement
 --
 -- >>> ta stmt'do "do {a++;} while (a < 5)"
--- Do (Scope "" [] [Expr (Postfix "++" (Iden a))]) (Infix "<" (Iden a) (Int 5))
+-- Do (Block [Expr (Postfix "++" (Iden a))]) (Infix "<" (Iden a) (Int 5))
 stmt'do :: Jparser Jstmt
 stmt'do =
-  symbol "do" *> block'or'single >>= \b ->
-    (symbol "while" *> parens jexp) >>= \e ->
-      pure $ Do b e -- do ({..} or j-stmt;) while (cond)
+  Do -- do ({..} or j-stmt;) while (cond)
+    <$> (symbol "do" *> block'or'single)
+    <*> (symbol "while" *> parens jexp)
 
 -- | switch statement
 --
 -- >>> ta stmt'switch "switch (a) { case 1: break; default: 2 }"
--- Switch (Iden a) [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]]
+-- Switch (Iden a) (Block [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]])
 --
 -- >>> ta stmt'switch "switch (e) { case Xcode x -> a; default -> b; }"
 -- Switch (Iden e) [Case [Eset (Iden x) E] [Expr (Iden a)],Case [E] [Expr (Iden b)]]
+--
+-- switch (num) {case 1 -> "One"; case 2 -> yield "Two"; default -> yield "Unknown";}
 stmt'switch :: Jparser Jstmt
 stmt'switch = uncurry Switch <$> switch <* skip semi
 
-switch :: Jparser (Jexp, [Jstmt])
-switch = do
-  e <- symbol "switch" *> parens jexp -- switch (expr)
-  b <-
-    braces
-      ( some $
-          Case
-            <$> ( (string "case" *> gap *> label <* to) -- case expr [,expr]:
-                    <|> (symbol "default" *> to $> [E]) -- default:
-                ) -- case label
-            <*> ( ((: []) . Yield <$> (string "yield" *> gap *> jexp)) -- yield
-                    <|> jstmts
-                ) -- case body
-      ) -- switch body
-  pure (e, b)
+switch :: Jparser (Jexp, Jstmt)
+switch =
+  (,)
+    <$> (symbol "switch" *> parens jexp) -- switch (expr)
+    <*> ( Block
+            <$> braces
+              ( some $
+                  Case
+                    <$> ( (string "case" *> gap *> label <* to) -- case e,..
+                            <|> (symbol "default" *> to $> [E]) -- default:
+                        ) -- case label
+                    <*> jparser -- case body
+              ) -- switch body
+        )
  where
   label = sepBy1 (symbol ",") (choice [expr'match, expr'lval, expr'prim])
   to = symbol ":" <|> symbol "->" -- Java 12+ case arrow
   expr'match = flip Eset E <$> (typ'gap *> expr'iden) -- Java 17+ pattern
 
+-- | yield statement
+stmt'yield :: Jparser Jstmt
+stmt'yield = Yield <$> (string "yield" *> gap *> jexp)
+
 -- | assert statement
 stmt'assert :: Jparser Jstmt
-stmt'assert = do
-  string "assert" *> gap
-  cond <- jexp
-  Assert cond <$> ((symbol ":" *> jexp) <|> pure E)
+stmt'assert =
+  Assert -- assert jexp [:reason]
+    <$> (string "assert" *> gap *> jexp)
+    <*> ((symbol ":" *> jexp) <|> pure E)
 
 -- | synchronized statement
 stmt'sync :: Jparser Jstmt
 stmt'sync =
-  symbol "synchronized" *> parens jexp >>= \c ->
-    Sync c <$> block'or'single
+  Sync -- synchronized (jexp,..) ({..} or j-stmt)
+    <$> (symbol "synchronized" *> parens jexp)
+    <*> block'or'single
 
 -- | Definition of Java annotation
 data Annotation
@@ -968,18 +1048,16 @@ instance Pretty Annotation
 -- At (Dot (Iden j) (Iden Query)) [Pair (Iden key) (Val (Dot (Iden sofia) (Iden maria)))]
 anno :: Jparser Annotation
 anno =
-  char '@' -- sigil
-    *> ( At
-          <$> expr'access -- name of annotation
-          <*> option mempty (parens (sepBy' (symbol ",") unit)) -- (..)
-       )
+  At -- @anno(..)
+    <$> (char '@' *> expr'access) -- @ + annotation name
+    <*> option mempty (parens (sepBy' (symbol ",") unit)) -- optional (..)
  where
   unit = choice [anno, arr, pair, val]
   arr = Arr <$> braces (sepBy' (symbol ",") (choice [anno, val]))
-  pair = expr'iden >>= \k -> symbol "=" *> (Pair k <$> val)
-  val = choice [anno, arr, Val <$> jexp]
+  pair = Pair <$> expr'iden <*> (symbol "=" *> choice [anno, arr, val])
+  val = Val <$> jexp
 
--- TODO: Java 17+ record, and sealed
+-- TODO: Java 17+ 'record', and 'sealed'
 --
 -- public sealed class Shape permits Circle, Square, Rectangle {}
 -- public record Point(int x, int y) {}
