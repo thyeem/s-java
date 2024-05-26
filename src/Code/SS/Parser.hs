@@ -97,7 +97,8 @@ typ'prim :: Jparser String
 typ'prim =
   choice
     ( string
-        <$> [ "boolean"
+        <$> [ "void"
+            , "boolean"
             , "byte"
             , "char"
             , "short"
@@ -105,7 +106,6 @@ typ'prim =
             , "long"
             , "float"
             , "double"
-            , "void"
             ]
     )
 
@@ -126,6 +126,24 @@ modifier =
           , "strictfp"
           , "volatile"
           ]
+
+aug'ops :: Jparser String
+aug'ops =
+  choice
+    ( string
+        <$> [ "+="
+            , "-="
+            , "*="
+            , "/="
+            , "%="
+            , "<<="
+            , ">>="
+            , ">>>="
+            , "&="
+            , "^="
+            , "|="
+            ]
+    )
 
 -- | type
 -- >>> ta typ "int[][] c0ffee"
@@ -346,7 +364,7 @@ factor = e <|> parens e
       , expr'iof -- instanceof
       , expr'access -- access: Class::ref().call().array[i][j].name
       , expr'arr -- init array: {1,2,3}
-      , expr'set -- expr-set: (ch = in.read(buf,0,len))
+      , parens expr'set -- expr-set: (ch = in.read(buf,0,len))
       , expr'switch -- expr-switch: return switch (v) {}
       , expr'prim -- primitive
       ]
@@ -540,7 +558,7 @@ expr'lval =
 -- >>> ta expr'set "(ch = read(buf,0,3))"
 -- Eset (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
 expr'set :: Jparser Jexp
-expr'set = parens $ Eset <$> expr'iden <*> (symbol "=" *> jexp)
+expr'set = Eset <$> expr'iden <*> (symbol "=" *> jexp)
 
 -- | Switch statement within expression context (Java 12)
 expr'switch :: Jparser Jexp
@@ -803,7 +821,6 @@ stmt'set = do
     , aug'assign -- aug-assign: a+=jexp; a-=jexp; ...
     ]
  where
-  ops = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", ">>>=", "&=", "^=", "|="]
   wrap s = if length s == 1 then pure (head s) else pure (Sets s)
   mixed = typ'gap *> sepBy1 (symbol ",") (assign <|> decl)
   decl = Set mempty <$> expr'lval <*> pure E
@@ -811,9 +828,7 @@ stmt'set = do
   chain'assign =
     endBy1 (symbol "=") expr'lval
       <**> (fmap . flip (Set "=") <$> jexp)
-  aug'assign =
-    expr'lval >>= \i ->
-      Set <$> choice (symbol <$> ops) <*> pure i <*> jexp
+  aug'assign = expr'lval >>= \i -> Set <$> aug'ops <*> pure i <*> jexp
 
 -- | Return statement
 --
