@@ -33,6 +33,7 @@ import Text.S
   , skipMany
   , some
   , string
+  , try
   , (<|>)
   )
 
@@ -127,11 +128,13 @@ modifier =
           , "volatile"
           ]
 
-aug'ops :: Jparser String
-aug'ops =
+-- | assignment operators
+set'ops :: Jparser String
+set'ops =
   choice
-    ( string
-        <$> [ "+="
+    ( symbol
+        <$> [ "="
+            , "+="
             , "-="
             , "*="
             , "/="
@@ -278,7 +281,7 @@ data Jexp
   | Postfix !String Jexp -- postfix unary operator
   | Infix !String Jexp Jexp -- binary infix operator
   | Tern Jexp Jexp Jexp -- ternary expression
-  | Eset Jexp Jexp -- expr-context assignment
+  | Eset !String Jexp Jexp -- expr-context assignment
   | Eswitch Jexp Jstmt -- expr-context switch
   | Anno Annotation -- annotation
   | E -- placeholder expression
@@ -322,18 +325,20 @@ instance Pretty Jstmt
 jexp :: Jparser Jexp
 jexp = ternary <|> term
  where
-  term = expr (factor <|> parens term) priority
+  term = expr (unary <|> factor <|> parens term) priority
   infix' x = InfixL (symbol x $> Infix x)
   prefix x = PrefixU (symbol x $> Prefix x)
   postfix x = PostfixU (symbol x $> Postfix x)
   ternary =
     term >>= \x ->
       option x (Tern x <$> (symbol "?" *> jexp) <*> (symbol ":" *> jexp))
+  unary =
+    some (choice $ symbol <$> ["-", "+", "!", "~"])
+      <**> (foldr Prefix <$> (factor <|> parens term))
   priority =
-    [ [prefix "-", prefix "+", prefix "!", prefix "~"]
-    , [prefix "++", prefix "--", postfix "++", postfix "--"]
-    , [infix' "*", infix' "/"]
-    , [infix' "+", infix' "-", infix' "%"]
+    [ [postfix "++", postfix "--", prefix "++", prefix "--"]
+    , [infix' "*", infix' "/", infix' "%"]
+    , [infix' "+", infix' "-"]
     ,
       [ infix' "^"
       , infix' "&"
@@ -362,9 +367,9 @@ factor = e <|> parens e
     choice
       [ expr'lam -- lambda
       , expr'iof -- instanceof
+      , expr'set -- expr-set: ch = in.read(buf,0,len)
       , expr'access -- access: Class::ref().call().array[i][j].name
       , expr'arr -- init array: {1,2,3}
-      , parens expr'set -- expr-set: (ch = in.read(buf,0,len))
       , expr'switch -- expr-switch: return switch (v) {}
       , expr'prim -- primitive
       ]
@@ -413,15 +418,12 @@ expr'str = token $ Str <$> stringLit
 -- InstOf "String" (Iden name)
 --
 -- >>> ta expr'iof "name instanceof String s"
--- InstOf "String" (Eset (Iden s) (Iden name))
+-- InstOf "String" (Eset "=" (Iden s) (Iden name))
 expr'iof :: Jparser Jexp
 expr'iof = token $ do
   i <- expr'access -- iden
   string "instanceof" *> gap -- instanceof
-  ( typ'gap >>= \t ->
-      expr'iden >>= \o ->
-        pure $ InstOf t (Eset o i)
-    ) -- Java 16+ pattern matching: Type t
+  (try typ'gap >>= \t -> InstOf t <$> expr'match i) -- Java 16+: Type t
     <|> (typ >>= \t -> pure (InstOf t i)) -- Type
 
 -- | Type cast expression
@@ -459,7 +461,7 @@ expr'new =
       <*> choice
         [ args'expr -- (expr,..)
         , args'arr -- {expr,..}
-        , some (squares (jexp <|> string "" $> E)) -- [expr]
+        , some (squares (jexp <|> symbol "" $> E)) -- [expr]
         ]
       <*> option ST (Block <$> braces jparser) -- optional {..}
 
@@ -555,10 +557,18 @@ expr'lval =
 
 -- | Assign statement within expression context
 --
--- >>> ta expr'set "(ch = read(buf,0,3))"
--- Eset (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
+-- >>> ta expr'set "ch = read(buf,0,3)"
+-- Eset "=" (Iden ch) (Call (Iden read) [Iden buf,Int 0,Int 3])
 expr'set :: Jparser Jexp
-expr'set = Eset <$> expr'iden <*> (symbol "=" *> jexp)
+expr'set = assign Eset
+
+-- | Generalized assign-statement parser including augmented assignments
+assign :: (String -> Jexp -> Jexp -> a) -> Jparser a
+assign f = expr'lval >>= \i -> f <$> set'ops <*> pure i <*> jexp
+
+-- | Java 16+ pattern match
+expr'match :: Jexp -> Jparser Jexp
+expr'match e = flip (Eset "=") e <$> (typ'gap *> expr'iden)
 
 -- | Switch statement within expression context (Java 12)
 expr'switch :: Jparser Jexp
@@ -641,13 +651,13 @@ jstmt'simple =
         , stmt'do
         , stmt'anno
         , stmt'abst
-        , stmt'ret
         , stmt'yield
         , stmt'set
-        , stmt'expr
+        , stmt'ret
         , stmt'assert
         , stmt'flow
         , stmt'throw
+        , stmt'expr
         ]
     )
 
@@ -754,7 +764,7 @@ stmt'abst = do
 -- AnnoEl (Iden classValue) (Dot (Iden String) (Iden class))
 --
 -- >>> ta stmt'anno "Nested nested() default @Nested(42)"
--- AnnoEl (Iden nested) (Anno (At (Call (Iden Nested) [Int 42]) []))
+-- AnnoEl (Iden nested) (Anno (At (Iden Nested) [Val (Int 42)]))
 stmt'anno :: Jparser Jstmt
 stmt'anno =
   AnnoEl -- Type name () default expr;
@@ -791,7 +801,9 @@ stmt'enum = do
             <* skip semi
         ) -- enum body {..}
  where
-  enum'const = (Scope <$> token iden <*> pure [] <*> block) <|> stmt'expr
+  enum'const =
+    (Scope <$> token iden <*> option mempty args'expr <*> block)
+      <|> stmt'expr
 
 -- | Bare-block statement
 stmt'bare :: Jparser Jstmt
@@ -816,19 +828,15 @@ stmt'set = do
   skip (many $ modifier *> gap) -- modifiers
   choice
     [ mixed >>= wrap -- declare/assign: Type a, b=jexp,...
-    , chain'assign >>= wrap -- chain assign: a=b=c=...=jexp
-    , assign -- single assignment: a=jexp; ...
-    , aug'assign -- aug-assign: a+=jexp; a-=jexp; ...
+    , chain'set >>= wrap -- chain set: a=b=c=...=jexp
+    , assign Set -- (augmented) assign: a=jexp; a+=jexp; a-=jexp; ...
     ]
  where
   wrap s = if length s == 1 then pure (head s) else pure (Sets s)
-  mixed = typ'gap *> sepBy1 (symbol ",") (assign <|> decl)
   decl = Set mempty <$> expr'lval <*> pure E
-  assign = Set "=" <$> (expr'lval <* symbol "=") <*> jexp
-  chain'assign =
-    endBy1 (symbol "=") expr'lval
-      <**> (fmap . flip (Set "=") <$> jexp)
-  aug'assign = expr'lval >>= \i -> Set <$> aug'ops <*> pure i <*> jexp
+  mixed = typ'gap *> sepBy1 (symbol ",") (assign Set <|> decl)
+  chain'set =
+    endBy1 (symbol "=") expr'lval <**> (fmap . flip (Set "=") <$> jexp)
 
 -- | Return statement
 --
@@ -893,13 +901,13 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- | try-catch statement
 --
 -- >>> ta stmt'try "try {} catch (Except e) {}"
--- Try (Block []) [Catch (Iden e) (Block [])]
+-- Try [] (Block []) [Catch (Iden e) (Block [])]
 --
 -- >>> ta stmt'try "try {} finally {close();}"
--- Try (Block []) [Catch E (Block [Expr (Call (Iden close) [])])]
+-- Try [] (Block []) [Catch E (Block [Expr (Call (Iden close) [])])]
 --
 -- >>> ta stmt'try "try (Buffer b = new Buffer()) {}"
--- Try (Block [Set "=" (Iden b) (New "Buffer" [] ST)]) []
+-- Try [Set "=" (Iden b) (New "Buffer" [] ST)] (Block []) []
 stmt'try :: Jparser Jstmt
 stmt'try =
   Try -- try (with-resources) ({..} or j-stmt) (catch + finally)
@@ -925,7 +933,7 @@ stmt'try =
 -- | if-statement
 --
 -- >>> ta stmt'if "if (a > b) {} else {}"
--- If (Infix ">" (Iden a) (Iden b)) (Block []) [Else E (Block [])]
+-- If [Expr (Infix ">" (Iden a) (Iden b))] (Block []) [Else [] (Block [])]
 stmt'if :: Jparser Jstmt
 stmt'if =
   If -- if (cond) ({..} or j-stmt) ( else-if + else )
@@ -939,7 +947,7 @@ stmt'if =
               ) -- (opt) multiple else-if
             <*> option
               mempty
-              ( pure . Else (pure ST)
+              ( pure . Else mempty
                   <$> (symbol "else" *> block'or'single)
               ) -- (opt) else
         ) -- else-if + else
@@ -949,13 +957,13 @@ stmt'if =
 -- | for-statement
 --
 -- >>> ta stmt'for "for (int i: numbers) {}"
--- For (Block [Set "" (Iden i) E,Expr (Iden numbers)])
+-- For [Set "" (Iden i) E,Expr (Iden numbers)] (Block [])
 --
 -- >>> ta stmt'for "for (int i;;) {}"
--- For (Block [Set "" (Iden i) E,ST,ST])
+-- For [Set "" (Iden i) E,ST,ST] (Block [])
 --
 -- >>> ta stmt'for "for (;;) { infinite.run() }"
--- For (Block [ST,ST,ST,Expr (Dot (Iden infinite) (Call (Iden run) []))])
+-- For [ST,ST,ST] (Block [Expr (Dot (Iden infinite) (Call (Iden run) []))])
 stmt'for :: Jparser Jstmt
 stmt'for =
   For -- for (header) ({..} or j-stmt;)
@@ -991,10 +999,11 @@ stmt'do =
 -- >>> ta stmt'switch "switch (a) { case 1: break; default: 2 }"
 -- Switch (Iden a) (Block [Case [Int 1] [Flow "break"],Case [E] [Expr (Int 2)]])
 --
--- >>> ta stmt'switch "switch (e) { case Xcode x -> a; default -> b; }"
--- Switch (Iden e) [Case [Eset (Iden x) E] [Expr (Iden a)],Case [E] [Expr (Iden b)]]
+-- >>> ta stmt'switch "switch (e) { case Xcode x -> a; }"
+-- Switch (Iden e) (Block [Case [Eset "=" (Iden x) E] [Expr (Iden a)]])
 --
--- switch (num) {case 1 -> "One"; case 2 -> yield "Two"; default -> yield "Unknown";}
+-- >>> ta stmt'switch "switch (num) { case 1 -> One; default -> yield dunno; }"
+-- Switch (Iden num) (Block [Case [Int 1] [Expr (Iden One)],Case [E] [Yield (Iden dunno)]])
 stmt'switch :: Jparser Jstmt
 stmt'switch = uncurry Switch <$> switch <* skip semi
 
@@ -1013,9 +1022,8 @@ switch =
               ) -- switch body
         )
  where
-  label = sepBy1 (symbol ",") (choice [expr'match, expr'lval, expr'prim])
+  label = sepBy1 (symbol ",") (choice [expr'match E, expr'lval, expr'prim])
   to = symbol ":" <|> symbol "->" -- Java 12+ case arrow
-  expr'match = flip Eset E <$> (typ'gap *> expr'iden) -- Java 17+ pattern
 
 -- | yield statement
 stmt'yield :: Jparser Jstmt
@@ -1057,17 +1065,17 @@ instance Pretty Annotation
 -- At (Iden Work) [Pair (Iden days) (Arr [Val (Iden MON)]),Pair (Iden hour) (Val (Int 3))]
 --
 -- >>> ta anno "@Outer(inner=@Inner())"
--- At (Iden Outer) [Pair (Iden inner) (At (Call (Iden Inner) []) [])]
+-- At (Iden Outer) [Pair (Iden inner) (At (Iden Inner) [])]
 --
 -- >>> ta anno "@j.Query(key=sofia.maria)"
 -- At (Dot (Iden j) (Iden Query)) [Pair (Iden key) (Val (Dot (Iden sofia) (Iden maria)))]
 anno :: Jparser Annotation
 anno =
   At -- @anno(..)
-    <$> (char '@' *> expr'access) -- @ + annotation name
+    <$> (char '@' *> expr'lval) -- @ + annotation name
     <*> option mempty (parens (sepBy' (symbol ",") unit)) -- optional (..)
  where
-  unit = choice [anno, arr, pair, val]
+  unit = choice [anno, pair, arr, val]
   arr = Arr <$> braces (sepBy' (symbol ",") (choice [anno, val]))
   pair = Pair <$> expr'iden <*> (symbol "=" *> choice [anno, arr, val])
   val = Val <$> jexp

@@ -24,11 +24,4 @@ data Violation
 ff :: String
 ff =
   [here|
-        for (int i = 0; i < v.size(); i++) {
-            Font f = v.get(i);
-            int sw = getFontMetrics(f).stringWidth(f.getName());
-            g2.setFont(f);
-            g2.drawString(f.getName(), (w / 2 - sw / 2), yy = strH);
-        }
-
 |]

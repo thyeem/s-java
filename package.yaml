@@ -49,6 +49,7 @@ tests:
     source-dirs: test
     dependencies:
       - base
+      - deepseq
       - text
       - Glob
       - hspec
