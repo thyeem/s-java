@@ -1,12 +1,19 @@
-name:                ss
+name:                s-java
 version:             0.0.1
-github:              thyeem/ss
+github:              thyeem/s-java
 license:             MIT
 author:              Francis Lim
 maintainer:          thyeem@gmail.com
 copyright:           2024 Francis
 description: |
+  A Java parser implemented in Haskell, built on top of the @s@ parser.
   .
+
+flags:
+  optimize:
+    description: "Enable optimizations (-O2)"
+    manual: true
+    default: true
 
 extra-source-files:
 - README.md
@@ -19,29 +26,41 @@ ghc-options:
 
 library:
   source-dirs: src
-  ghc-options:
-  - -O2
-  - -g0
-  - -fexpose-all-unfoldings
+  when:
+    condition: flag(optimize)
+    ghc-options:
+      - -O2
+      - -g0
+      - -fexpose-all-unfoldings
   dependencies:
   - base
   - containers
   - here
   - s
 
-
 executables:
-  ss:
+  sj:
     main: Main.hs
     source-dirs: app
     ghc-options:
-    - -O2
+    - -threaded
+    - -with-rtsopts=-N
+    when:
+      condition: flag(optimize)
+      ghc-options:
+        - -O2
+        - -g0
+        - -fexpose-all-unfoldings
     dependencies:
     - base
-    - ss
-    when:
-    - condition: false
-      other-modules: Paths_ss
+    - deepseq
+    - Glob
+    - optparse-applicative
+    - gitrev
+    - s
+    - s-java
+    other-modules:
+    - Paths_s_java
 
 tests:
   it:
@@ -54,7 +73,7 @@ tests:
       - Glob
       - hspec
       - s
-      - ss
+      - s-java
 
   doc:
     main: doctest.hs
@@ -63,4 +82,4 @@ tests:
     - base
     - Glob
     - doctest
-    - ss
+    - s-java

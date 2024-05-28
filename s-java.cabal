@@ -4,11 +4,12 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           ss
+name:           s-java
 version:        0.0.1
-description:    .
-homepage:       https://github.com/thyeem/ss#readme
-bug-reports:    https://github.com/thyeem/ss/issues
+description:    A Java parser implemented in Haskell, built on top of the @s@ parser.
+                .
+homepage:       https://github.com/thyeem/s-java#readme
+bug-reports:    https://github.com/thyeem/s-java/issues
 author:         Francis Lim
 maintainer:     thyeem@gmail.com
 copyright:      2024 Francis
@@ -21,40 +22,55 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/thyeem/ss
+  location: https://github.com/thyeem/s-java
+
+flag optimize
+  description: Enable optimizations (-O2)
+  manual: True
+  default: True
 
 library
   exposed-modules:
-      Code.SS
-      Code.SS.Internal
-      Code.SS.Parser
+      Text.S.Java
+      Text.S.Java.Internal
   other-modules:
-      Paths_ss
+      Paths_s_java
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -O2 -g0 -fexpose-all-unfoldings
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans
   build-depends:
       base
     , containers
     , here
     , s
   default-language: Haskell2010
+  if flag(optimize)
+    ghc-options: -O2 -g0 -fexpose-all-unfoldings
 
-executable ss
+executable sj
   main-is: Main.hs
+  other-modules:
+      Paths_s_java
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -O2
+  ghc-options: -Wall -Wno-name-shadowing -Wno-orphans -threaded -with-rtsopts=-N
   build-depends:
-      base
-    , ss
+      Glob
+    , base
+    , deepseq
+    , gitrev
+    , optparse-applicative
+    , s
+    , s-java
   default-language: Haskell2010
+  if flag(optimize)
+    ghc-options: -O2 -g0 -fexpose-all-unfoldings
 
 test-suite doc
   type: exitcode-stdio-1.0
   main-is: doctest.hs
   other-modules:
-      Paths_ss
+      Paths_s_java
   hs-source-dirs:
       ./
   ghc-options: -Wall -Wno-name-shadowing -Wno-orphans
@@ -62,7 +78,7 @@ test-suite doc
       Glob
     , base
     , doctest
-    , ss
+    , s-java
   default-language: Haskell2010
 
 test-suite it
@@ -70,7 +86,7 @@ test-suite it
   main-is: Spec.hs
   other-modules:
       ParserSpec
-      Paths_ss
+      Paths_s_java
   hs-source-dirs:
       test
   ghc-options: -Wall -Wno-name-shadowing -Wno-orphans
@@ -80,6 +96,6 @@ test-suite it
     , deepseq
     , hspec
     , s
-    , ss
+    , s-java
     , text
   default-language: Haskell2010

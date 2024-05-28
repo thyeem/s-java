@@ -1,4 +1,4 @@
-module Code.SS.Parser where
+module Text.S.Java.Internal where
 
 import Control.Applicative ((<**>))
 import Data.Functor (($>))
@@ -14,7 +14,6 @@ import Text.S
   , binary
   , char
   , choice
-  , endBy1
   , expr
   , float
   , genLexer
@@ -162,9 +161,7 @@ typ =
   concat
     <$> sequence
       [ typ'prim
-          <|> ( sepBy1 (between tidy tidy (string ".")) iden
-                  >>= reorg "" "" "."
-              ) -- type name
+          <|> (sepBy1 (between tidy tidy (string ".")) iden >>= reorg "" "" ".")
       , option mempty (tidy *> generic) -- generic <T>
       , option mempty ndarr -- ndarray [][]
       , option mempty (tidy *> string "...") -- varargs ...
@@ -662,6 +659,7 @@ jstmt'simple =
     )
 
 -- | Parse either a braces block or Java's single statement
+-- If 'optBody' is set to `True`, an empty body is allowed.
 --
 -- This parser is for:
 --
@@ -678,10 +676,15 @@ jstmt'simple =
 --
 -- They all are defined as 'Scope`, rather than 'Block'
 --
--- >>> ta block'or'single "{ coffee.roasted(); }"
+-- >>> ta (block'or'single False) "{ coffee.roasted(); }"
 -- Block [Expr (Dot (Iden coffee) (Call (Iden roasted) []))]
-block'or'single :: Jparser Jstmt
-block'or'single = (Block <$> block) <|> jstmt
+--
+-- >>> ta (block'or'single True) ";"
+-- ST
+block'or'single :: Bool -> Jparser Jstmt
+block'or'single optBody =
+  (Block <$> block)
+    <|> (if optBody then jstmt <|> semi $> ST else jstmt)
 
 -- | Common block parser
 block :: Jparser [Jstmt]
@@ -821,22 +824,19 @@ stmt'bare = Block <$> (skip (symbol "static") *> block)
 -- Sets [Set "" (Iden a) E,Set "=" (Iden b) (Int 5)]
 --
 -- >>> ta stmt'set "a=b=1"
--- Sets [Set "=" (Iden a) (Int 1),Set "=" (Iden b) (Int 1)]
+-- Set "=" (Iden a) (Eset "=" (Iden b) (Int 1))
 stmt'set :: Jparser Jstmt
-stmt'set = do
-  skip (many anno) -- annotations
-  skip (many $ modifier *> gap) -- modifiers
-  choice
-    [ mixed >>= wrap -- declare/assign: Type a, b=jexp,...
-    , chain'set >>= wrap -- chain set: a=b=c=...=jexp
-    , assign Set -- (augmented) assign: a=jexp; a+=jexp; a-=jexp; ...
-    ]
+stmt'set =
+  do
+    skip (many anno) -- annotations
+    skip (many $ modifier *> gap) -- modifiers
+    mixed >>= wrap -- declare/assign: Type a, b, c=d=jexp,...
+    <|> normal -- (augmented) assign: a=b=c=...=jexp; a+=jexp; a-=jexp; ...
  where
   wrap s = if length s == 1 then pure (head s) else pure (Sets s)
   decl = Set mempty <$> expr'lval <*> pure E
   mixed = typ'gap *> sepBy1 (symbol ",") (assign Set <|> decl)
-  chain'set =
-    endBy1 (symbol "=") expr'lval <**> (fmap . flip (Set "=") <$> jexp)
+  normal = assign Set
 
 -- | Return statement
 --
@@ -910,24 +910,24 @@ stmt'throw = Throw <$> (string "throw" *> gap *> jexp)
 -- Try [Set "=" (Iden b) (New "Buffer" [] ST)] (Block []) []
 stmt'try :: Jparser Jstmt
 stmt'try =
-  Try -- try (with-resources) ({..} or j-stmt) (catch + finally)
+  Try -- try (with-resources) ({..} or stmt) (catch + finally)
     <$> ( symbol "try"
             *> option
               mempty
               (parens (sepBy' (symbol ";") stmt'set))
         ) -- (with-resources)
-    <*> block'or'single -- {..} or j-stmt;
+    <*> block'or'single False -- {..} or stmt;
     <*> ( (++)
             <$> many -- (opt) multiple catch
               ( Catch
                   <$> ( symbol "catch"
                           *> parens (sepBy1 (symbol "|") typ'gap *> expr'iden)
                       ) -- catch (E1 | E2 e)
-                  <*> block'or'single --  {..} or j-stmt;
+                  <*> block'or'single False --  {..} or stmt;
               )
             <*> option -- (opt) finally
               mempty
-              (pure . Catch E <$> (symbol "finally" *> block'or'single))
+              (pure . Catch E <$> (symbol "finally" *> block'or'single False))
         ) -- catch + finally
 
 -- | if-statement
@@ -936,19 +936,19 @@ stmt'try =
 -- If [Expr (Infix ">" (Iden a) (Iden b))] (Block []) [Else [] (Block [])]
 stmt'if :: Jparser Jstmt
 stmt'if =
-  If -- if (cond) ({..} or j-stmt) ( else-if + else )
+  If -- if (cond) ({..} or stmt) ( else-if + else )
     <$> (symbol "if" *> parens cond) -- if (cond)
-    <*> block'or'single -- if-body {..} or j-stmt;
+    <*> block'or'single True -- {..} or stmt; or ;
     <*> ( (++)
             <$> many
               ( Else
                   <$> (symbol "else if" *> parens cond) -- else-if (cond)
-                  <*> block'or'single -- else-if body {..} or j-stmt;
+                  <*> block'or'single True -- {..} or stmt; or ;
               ) -- (opt) multiple else-if
             <*> option
               mempty
               ( pure . Else mempty
-                  <$> (symbol "else" *> block'or'single)
+                  <$> (symbol "else" *> block'or'single True)
               ) -- (opt) else
         ) -- else-if + else
  where
@@ -966,9 +966,9 @@ stmt'if =
 -- For [ST,ST,ST] (Block [Expr (Dot (Iden infinite) (Call (Iden run) []))])
 stmt'for :: Jparser Jstmt
 stmt'for =
-  For -- for (header) ({..} or j-stmt;)
+  For -- for (header) ({..} or stmt;)
     <$> (symbol "for" *> (parens classic <|> parens foreach)) -- (header)
-    <*> block'or'single -- {..} or j-stmt;
+    <*> block'or'single True -- {..} or stmt; or ;
  where
   p = stmt'set <|> stmt'expr
   foreach = sepBy (symbol ":") p -- (int i : ix)
@@ -980,9 +980,9 @@ stmt'for =
 -- While (Infix "<" (Iden a) (Int 5)) (Block [Expr (Postfix "++" (Iden a))])
 stmt'while :: Jparser Jstmt
 stmt'while =
-  While -- while (cond) ({..} or j-stmt;)
+  While -- while (cond) ({..} or stmt;)
     <$> (symbol "while" *> parens jexp)
-    <*> block'or'single
+    <*> block'or'single True
 
 -- | do-while statement
 --
@@ -990,8 +990,8 @@ stmt'while =
 -- Do (Block [Expr (Postfix "++" (Iden a))]) (Infix "<" (Iden a) (Int 5))
 stmt'do :: Jparser Jstmt
 stmt'do =
-  Do -- do ({..} or j-stmt;) while (cond)
-    <$> (symbol "do" *> block'or'single)
+  Do -- do ({..} or stmt;) while (cond)
+    <$> (symbol "do" *> block'or'single True)
     <*> (symbol "while" *> parens jexp)
 
 -- | switch statement
@@ -1019,8 +1019,8 @@ switch =
                             <|> (symbol "default" *> to $> [E]) -- default:
                         ) -- case label
                     <*> jparser -- case body
-              ) -- switch body
-        )
+              ) -- multiple cases
+        ) -- switch body
  where
   label = sepBy1 (symbol ",") (choice [expr'match E, expr'lval, expr'prim])
   to = symbol ":" <|> symbol "->" -- Java 12+ case arrow
@@ -1039,9 +1039,9 @@ stmt'assert =
 -- | synchronized statement
 stmt'sync :: Jparser Jstmt
 stmt'sync =
-  Sync -- synchronized (jexp,..) ({..} or j-stmt)
+  Sync -- synchronized (jexp,..) ({..} or stmt)
     <$> (symbol "synchronized" *> parens jexp)
-    <*> block'or'single
+    <*> block'or'single False
 
 -- | Definition of Java annotation
 data Annotation

@@ -1,6 +1,5 @@
 module ParserSpec where
 
-import Code.SS (jparser)
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Monad ((>=>))
@@ -9,6 +8,7 @@ import System.FilePath.Glob (glob)
 import System.IO
 import Test.Hspec
 import Text.S
+import Text.S.Java (jparser)
 
 spec :: Spec
 spec = do
